@@ -216,6 +216,10 @@ HeadsetControl source (as its GPL license requires).
 `WirelessBattery.exe` on its own also works. Without `headsetcontrol.exe` next to it (or on `PATH`) you
 just lose the extra headsets.
 
+The optional [Windows device manager](docs/device-panel.md) uses Qt Quick and builds separately.
+Open `WirelessBatteryPanel.exe` to start the manager and its background process. The taskbar widget
+and tray menu also offer **Open device manager**.
+
 ## Linux (experimental)
 
 A Linux build sits alongside the Windows app. It uses the same vendor drivers with a hidraw-based

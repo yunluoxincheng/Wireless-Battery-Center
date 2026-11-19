@@ -107,5 +107,7 @@ void PollPhoneLink(PollContext& ctx) {
     s.percent = pct;
     s.charging = charging;
     s.asleep = ageSec > kStaleSec;
+    constexpr ULONGLONG unixEpoch = 116444736000000000ull;
+    if (b.QuadPart >= unixEpoch) s.readingTimeMs = (b.QuadPart - unixEpoch) / 10000;
     ctx.out.push_back(s);
 }

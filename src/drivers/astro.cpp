@@ -114,6 +114,7 @@ bool PollLegacyCollection(const HidColl& c, const wchar_t* name, DeviceStatus& s
     s.connected = true;
     auto it = g_cache.find(c.pid);
     if (it != g_cache.end() && it->second.percent >= 0) {
+        s.cached = true;
         s.percent = it->second.percent;
         s.charging = it->second.charging;
         s.detail = it->second.docked ? L"docked, Astro Command Center" : L"Astro Command Center";

@@ -22,6 +22,7 @@ struct PollContext
     {
         out.push_back(s);
         if (!out.back().vid) out.back().vid = vid;
+        if (!out.back().pid) out.back().pid = pid;
         Claim(vid, pid);
     }
     // Distinct (vid, pid) pairs for a vendor that are not claimed yet.

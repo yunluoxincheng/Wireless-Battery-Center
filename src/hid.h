@@ -9,8 +9,11 @@
 #include "platform_compat.h"
 
 #ifdef _WIN32
+// Older MinGW headers leave the HID entry points without C linkage in C++.
+extern "C" {
 #include <hidsdi.h>
 #include <hidpi.h>
+}
 #else
 // Only the fields used by HidColl's accessors are needed by the portable drivers.
 struct HIDP_CAPS {

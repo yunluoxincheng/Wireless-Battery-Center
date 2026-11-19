@@ -295,6 +295,8 @@ bool PollLogitechDevice(PollContext& ctx, USHORT pid, const std::vector<const Hi
             found = ReadBattery10(h, idx, s);
         }
         if (found) {
+            s.vid = 0x046D;
+            s.pid = pid;
             if (s.kind == DeviceKind::Other) s.kind = GuessKind(s.name);
             ctx.out.push_back(s);
             any = true;

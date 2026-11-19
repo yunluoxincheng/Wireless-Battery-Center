@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,10 @@ struct DeviceStatus {
     int  millivolts = 0;       // battery voltage when reported (0 = unknown)
     int  graceSec   = 0;       // keep showing the last value this long if the device stops answering
     unsigned short vid = 0;    // USB / Bluetooth HID vendor id when known (picks the brand color)
+    unsigned short pid = 0;    // product id of the interface that supplied this status, when known
+    const char* protocol = nullptr; // diagnostic driver or protocol name (static storage)
+    bool cached = false;       // the source reused a previous reading this poll
+    std::uint64_t readingTimeMs = 0; // source timestamp in Unix milliseconds, when supplied
 };
 
 // Queries every supported device. Blocking (can take a second or two); call from a worker thread.
