@@ -4,6 +4,7 @@
 #include <vector>
 
 enum class DeviceKind { Other, Mouse, Headset, Keyboard, Gamepad, Phone };
+enum class WirelessLink : std::uint8_t { Unreported, Unknown, Linked, Unlinked };
 
 // One battery-powered device, as seen during a single poll.
 struct DeviceStatus {
@@ -16,13 +17,14 @@ struct DeviceStatus {
     std::wstring levelText;    // set when the device only reports coarse levels ("Low", "Full"...)
     bool charging   = false;
     bool asleep     = false;   // receiver answered but the device is sleeping (keep last value)
-    bool connected  = true;    // false: receiver present, device switched off (hidden)
+    bool connected  = true;    // false when the driver can confirm the device is unavailable
     int  millivolts = 0;       // battery voltage when reported (0 = unknown)
     int  graceSec   = 0;       // keep showing the last value this long if the device stops answering
     unsigned short vid = 0;    // USB / Bluetooth HID vendor id when known (picks the brand color)
     unsigned short pid = 0;    // product id of the interface that supplied this status, when known
     const char* protocol = nullptr; // diagnostic driver or protocol name (static storage)
     bool cached = false;       // the source reused a previous reading this poll
+    WirelessLink wirelessLink = WirelessLink::Unreported; // separate receiver telemetry, when supported
     std::uint64_t readingTimeMs = 0; // source timestamp in Unix milliseconds, when supplied
 };
 

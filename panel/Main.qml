@@ -158,12 +158,24 @@ ApplicationWindow {
         }
     }
 
-    function cached(device: var): bool {
-        return device.percent >= 0 && (!devices.connected || device.cached)
+    function readingExpired(device: var): bool {
+        return device.expired === true
+    }
+
+    function lastKnown(device: var): bool {
+        return device.percent >= 0 && (!devices.connected || device.cached || readingExpired(device))
+    }
+
+    function dimReading(device: var): bool {
+        return !devices.connected || device.offline === true || device.asleep === true || readingExpired(device)
+    }
+
+    function linkUnconfirmed(device: var): bool {
+        return device.wirelessLink === "unlinked" || device.wirelessLink === "unknown"
     }
 
     function low(device: var): bool {
-        return devices.connected && !device.offline && !device.charging && !cached(device)
+        return !dimReading(device) && !device.charging
             && device.percent >= 0 && device.percent <= devices.snapshot.threshold
     }
 
@@ -186,15 +198,19 @@ ApplicationWindow {
             status.push(qsTr("Critically low"))
         else if (low(device))
             status.push(qsTr("Low battery"))
-        if (cached(device))
+        if (devices.connected && !device.offline && linkUnconfirmed(device))
+            status.push(qsTr("Link unconfirmed"))
+        if (lastKnown(device))
             status.push(qsTr("Last known"))
+        if (readingExpired(device))
+            status.push(qsTr("Reading expired"))
         if (device.hidden)
             status.push(qsTr("Hidden"))
         return status.join(" · ")
     }
 
     function readingColor(device: var): color {
-        if (cached(device) || device.percent === undefined || device.percent < 0)
+        if (dimReading(device) || device.percent === undefined || device.percent < 0)
             return muted
         return critical(device) ? danger : low(device) ? (dark ? "#fbbf58" : "#975405") : good
     }
@@ -284,13 +300,14 @@ ApplicationWindow {
         required property var device
         dark: window.dark
         percent: device.level || device.percent === undefined ? -1 : device.percent
-        cached: window.cached(device)
-        charging: window.devices.connected && device.charging === true
+        cached: window.lastKnown(device)
+        dimmed: window.dimReading(device)
+        charging: !dimmed && device.charging === true
         iconSource: window.svg(window.deviceIcon(device))
-        iconColor: cached || device.percent < 0 ? window.muted : window.ink
-        arcStart: cached ? window.muted : window.critical(device) ? (dark ? "#f26470" : "#d93848")
+        iconColor: dimmed || device.percent < 0 ? window.muted : window.ink
+        arcStart: dimmed ? window.muted : window.critical(device) ? (dark ? "#f26470" : "#d93848")
             : window.low(device) ? (dark ? "#f59e0b" : "#d97706") : (dark ? "#34d38b" : "#16a366")
-        arcEnd: cached ? arcStart : window.critical(device) ? (dark ? "#fb7185" : "#ef4455")
+        arcEnd: dimmed ? arcStart : window.critical(device) ? (dark ? "#fb7185" : "#ef4455")
             : window.low(device) ? (dark ? "#fbbf24" : "#f59e0b") : (dark ? "#52e5a3" : "#22c57e")
     }
 
@@ -1014,6 +1031,9 @@ ApplicationWindow {
                 return window.devices.deviceByKey(deviceKey)
             }
             readonly property string displayName: device.displayName || ""
+            readonly property string disconnectedStatus: !window.devices.connected ? qsTr("Connection lost")
+                : device.offline ? qsTr("Offline") : ""
+            readonly property string unconfirmedStatus: window.linkUnconfirmed(device) ? qsTr("Unconfirmed") : ""
             readonly property int orderIndex: {
                 window.rowsRevision
                 return window.devices.indexOf(deviceKey)
@@ -1095,7 +1115,8 @@ ApplicationWindow {
                 Fact {
                     caption: qsTr("Battery reading")
                     value: !page.device.key || page.device.percent < 0 ? qsTr("Unknown")
-                        : window.cached(page.device) ? qsTr("Last known")
+                        : window.readingExpired(page.device) ? qsTr("Last known") + " · " + qsTr("Reading expired")
+                        : window.lastKnown(page.device) ? qsTr("Last known")
                         : window.devices.snapshot.demo === true ? qsTr("Sample") : qsTr("Live")
                 }
                 Divider {}
@@ -1106,12 +1127,14 @@ ApplicationWindow {
                 Divider {}
                 Fact {
                     caption: qsTr("Charging status")
-                    value: window.devices.connected && page.device.charging ? qsTr("Charging") : qsTr("Unknown")
+                    value: page.disconnectedStatus || (page.device.charging ? qsTr("Charging")
+                        : page.unconfirmedStatus || qsTr("Not charging"))
                 }
                 Divider {}
                 Fact {
                     caption: qsTr("Sleep status")
-                    value: window.devices.connected && page.device.asleep ? qsTr("Asleep") : qsTr("Unknown")
+                    value: page.disconnectedStatus || (page.device.asleep ? qsTr("Sleeping")
+                        : page.unconfirmedStatus || qsTr("Active"))
                 }
             }
 

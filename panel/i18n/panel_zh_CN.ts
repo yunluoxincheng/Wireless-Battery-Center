@@ -100,6 +100,18 @@
         <translation>充电中</translation>
     </message>
     <message>
+        <source>Not charging</source>
+        <translation>未充电</translation>
+    </message>
+    <message>
+        <source>Active</source>
+        <translation>活跃</translation>
+    </message>
+    <message>
+        <source>Sleeping</source>
+        <translation>休眠中</translation>
+    </message>
+    <message>
         <source>Connect a supported device, then select Refresh.</source>
         <translation>请连接受支持的设备，然后点击刷新。</translation>
     </message>
@@ -170,6 +182,18 @@
     <message>
         <source>Last known</source>
         <translation>上次读数</translation>
+    </message>
+    <message>
+        <source>Link unconfirmed</source>
+        <translation>无线状态待确认</translation>
+    </message>
+    <message>
+        <source>Unconfirmed</source>
+        <translation>待确认</translation>
+    </message>
+    <message>
+        <source>Reading expired</source>
+        <translation>读数已过期</translation>
     </message>
     <message>
         <source>Leave the display name blank to use the reported name.</source>

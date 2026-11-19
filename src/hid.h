@@ -67,6 +67,14 @@ public:
     bool Write(std::initializer_list<BYTE> data, int timeoutMs = 500) { return Write(std::vector<BYTE>(data), timeoutMs); }
     // Reads one input report into `buf` (resized to fit). Returns the byte count, or -1 on timeout/error.
     int Read(std::vector<BYTE>& buf, int timeoutMs);
+#ifdef _WIN32
+    struct ReadDiagnostics {
+        DWORD error = ERROR_SUCCESS;
+        bool timedOut = false;
+        bool strippedReportId = false;
+    };
+    int Read(std::vector<BYTE>& buf, int timeoutMs, ReadDiagnostics* diagnostics);
+#endif
     // For collections without an interrupt OUT pipe (WriteFile fails there): arms a read, sends
     // `data` with HidD_SetOutputReport, and returns the first input report like Read() does.
     int SetOutputAndRead(const std::vector<BYTE>& data, std::vector<BYTE>& buf, int timeoutMs);

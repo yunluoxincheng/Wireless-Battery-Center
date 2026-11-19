@@ -17,6 +17,11 @@
 #include "drivers.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace {
 
@@ -54,20 +59,102 @@ BYTE Checksum(const BYTE* b) {
     return (BYTE)(0x55 - sum);
 }
 
+// Set WIRELESS_BATTERY_ATK_TRACE to a log file path before starting the Windows backend.
+std::ofstream OpenAtkTrace() {
+#ifdef _WIN32
+    if (const auto* path = _wgetenv(L"WIRELESS_BATTERY_ATK_TRACE"); path && *path)
+        return std::ofstream(std::filesystem::path(path), std::ios::app);
+#endif
+    return {};
+}
+
+auto UnixMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+void TraceCollection(std::ostream& trace, const HidColl& c) {
+    // The MI and COL identifiers identify the collection without logging the device instance path.
+    const auto pos = c.path.find(L"&col");
+    trace << "collection mi=" << c.iface << " col=";
+    if (pos != std::wstring::npos) {
+        const auto id = c.path.substr(pos + 4, 2);
+        trace << std::string(id.begin(), id.end());
+    } else {
+        trace << '-';
+    }
+    trace << std::hex << " page=" << c.page() << " usage=" << c.usage() << std::dec
+          << " in=" << c.inLen() << " out=" << c.outLen() << " feature=" << c.featLen() << '\n';
+}
+
 // Sends `cmd` and waits for its checksummed reply.
-bool Query(HidDev& d, BYTE cmd, std::vector<BYTE>& r) {
+bool Query(HidDev& d, BYTE cmd, std::vector<BYTE>& r, std::ostream* trace, int attempt = 1) {
     std::vector<BYTE> req(17, 0);
     req[0] = 0x08;
     req[1] = cmd;
     req[16] = Checksum(req.data());
+    using Clock = std::chrono::steady_clock;
+    const auto flushStart = trace ? Clock::now() : Clock::time_point{};
     d.Flush();
-    if (!d.Write(req)) return false;
+    const auto sendTime = trace ? UnixMs() : 0;
+    const auto sendStart = trace ? Clock::now() : Clock::time_point{};
+    const auto elapsed = [](auto start, auto finish) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
+    };
+    const bool written = d.Write(req);
     ULONGLONG end = GetTickCount64() + 500;
+    if (trace) {
+        *trace << "cmd=0x0" << (int)cmd << " attempt=" << attempt << " tx_unix_ms=" << sendTime
+               << " flush_ms=" << elapsed(flushStart, sendStart) << " write_ms=" << elapsed(sendStart, Clock::now())
+               << " result=" << (written ? "written" : "write_failed") << '\n';
+    }
+    if (!written) return false;
     for (;;) {
         int left = (int)((LONGLONG)end - (LONGLONG)GetTickCount64());
-        if (left <= 0 || d.Read(r, left) < 17) return false;
-        if (r[0] == 0x08 && r[1] == cmd && r[16] == Checksum(r.data())) return true;
+        if (left <= 0) {
+            if (trace) *trace << "rx_ms=" << elapsed(sendStart, Clock::now()) << " result=deadline\n";
+            return false;
+        }
+#ifdef _WIN32
+        HidDev::ReadDiagnostics read;
+        const int size = trace ? d.Read(r, left, &read) : d.Read(r, left);
+#else
+        const int size = d.Read(r, left);
+#endif
+        const char* result = size < 0 ? "read_failed" : size < 17 ? "short_reply"
+            : r[0] != 0x08 ? "report_id_mismatch" : r[1] != cmd ? "command_mismatch"
+            : r[16] != Checksum(r.data()) ? "checksum_error" : nullptr;
+        if (trace) {
+#ifdef _WIN32
+            if (read.timedOut) result = "read_timeout";
+#endif
+            *trace << "rx_ms=" << elapsed(sendStart, Clock::now()) << " result=" << (result ? result : "ok");
+            if (size >= 0) {
+                *trace << " raw=";
+#ifdef _WIN32
+                if (read.strippedReportId) *trace << "00";
+#endif
+                constexpr char hex[] = "0123456789ABCDEF";
+                for (BYTE b : r) *trace << hex[b >> 4] << hex[b & 0x0F];
+            }
+#ifdef _WIN32
+            else *trace << " winerror=" << read.error;
+#endif
+            *trace << '\n';
+        }
+        if (size < 17) return false;
+        if (!result) return true;
     }
+}
+
+bool QueryBattery(HidDev& d, std::vector<BYTE>& reply, DeviceStatus& status, std::ostream* trace, int attempt) {
+    if (!Query(d, 0x04, reply, trace, attempt)) return false;
+    status.connected = true;
+    if (reply[6] <= 100) status.percent = reply[6];
+    status.charging = reply[7] != 0;
+    status.millivolts = (reply[8] << 8) | reply[9];
+    if (trace) *trace << "battery=" << (status.percent >= 0 ? "valid" : "invalid_level") << " level=" << (int)reply[6] << '\n';
+    return true;
 }
 
 std::wstring CleanName(std::wstring n, USHORT vid, USHORT pid) {
@@ -82,6 +169,14 @@ std::wstring CleanName(std::wstring n, USHORT vid, USHORT pid) {
     if (vid == 0x35BB) return L"HECATE mouse";
     if (n.empty()) n = vid == 0x373B ? L"ATK wireless mouse" : L"Wireless mouse";
     return n;
+}
+
+void DescribeMouse(DeviceStatus& s, const HidColl& c, const PollContext& ctx) {
+    s.key = L"kysona:" + Hex4(c.vid) + L":" + Hex4(KeyPid(c.vid, c.pid));
+    s.name = CleanName(HidProduct(c), c.vid, c.pid);
+    s.kind = KindFromCollections(ctx.colls, c.vid, c.pid);
+    if (s.kind == DeviceKind::Other) s.kind = DeviceKind::Mouse;
+    s.via = IsCable(c.vid, c.pid) ? L"USB cable" : L"2.4 GHz receiver";
 }
 
 }  // namespace
@@ -110,35 +205,63 @@ void PollKysona(PollContext& ctx) {
             std::stable_sort(colls.begin(), colls.end(), [](const HidColl* a, const HidColl* b) {
                 return (a->page() == 0xFF02 && a->usage() == 0x0002) > (b->page() == 0xFF02 && b->usage() == 0x0002);
             });
+            const bool atk8kReceiver = vid == 0x373B && pid == 0x101B;
+            auto traceFile = atk8kReceiver ? OpenAtkTrace() : std::ofstream{};
+            std::ostringstream traceBuffer;
+            auto* trace = traceFile.is_open() ? &traceBuffer : nullptr;
+            if (trace) *trace << "scan vid=373B pid=101B unix_ms=" << UnixMs() << '\n';
+            bool retriedBattery = false;
+            const char* batteryResult = "no_response";
             for (const HidColl* c : colls) {
                 HidDev d;
-                if (!d.Open(*c)) continue;
+                if (trace) TraceCollection(*trace, *c);
+                if (!d.Open(*c)) {
+#ifdef _WIN32
+                    if (trace) *trace << "open_failed winerror=" << GetLastError() << '\n';
+#endif
+                    continue;
+                }
                 std::vector<BYTE> r;
                 DeviceStatus s;
+                if (atk8kReceiver) s.wirelessLink = WirelessLink::Unknown;
                 bool answered = false;
-                if (Query(d, 0x03, r)) {
+                if (Query(d, 0x03, r, trace)) {
                     answered = true;
-                    s.connected = r[6] != 0;
+                    if (atk8kReceiver) {
+                        // 373B:101B returns the same 0x03 frame in idle and with the mouse switched off.
+                        if (r[6] == 0) s.wirelessLink = WirelessLink::Unlinked;
+                        if (r[6] == 1) s.wirelessLink = WirelessLink::Linked;
+                        if (trace) *trace << "link_byte=" << (int)r[6] << '\n';
+                    } else {
+                        s.connected = r[6] != 0;
+                    }
                 }
-                if ((!answered || s.connected) && Query(d, 0x04, r)) {
-                    answered = true;
-                    s.connected = true;
-                    if (r[6] <= 100) s.percent = r[6];
-                    s.charging = r[7] != 0;
-                    s.millivolts = (r[8] << 8) | r[9];
-                } else if (answered && s.connected) {
-                    s.asleep = true;  // the receiver says online but the mouse did not answer: keep the last value
+                if (!answered || (s.connected && s.wirelessLink != WirelessLink::Unlinked)) {
+                    answered = QueryBattery(d, r, s, trace, 1) || answered;
+                    batteryResult = s.percent >= 0 ? "first_success" : "failed";
+                    // The ATK 8K receiver can miss a battery reply while the mouse is active.
+                    if (atk8kReceiver && s.percent < 0 && !retriedBattery) {
+                        retriedBattery = true;
+                        Sleep(50);
+                        answered = QueryBattery(d, r, s, trace, 2) || answered;
+                        if (s.percent >= 0) batteryResult = "retry_success";
+                    }
+                } else {
+                    batteryResult = "skipped_unlinked";
                 }
+                // A failed battery request leaves the level unknown even when the receiver reports the mouse online.
                 if (!answered) continue;
                 if (!s.connected) {
                     ctx.Claim(vid, pid);
                     break;
                 }
-                s.key = L"kysona:" + Hex4(vid) + L":" + Hex4(KeyPid(vid, pid));
-                s.name = CleanName(HidProduct(*c), vid, pid);
-                s.kind = KindFromCollections(ctx.colls, vid, pid);
-                if (s.kind == DeviceKind::Other) s.kind = DeviceKind::Mouse;
-                s.via = IsCable(vid, pid) ? L"USB cable" : L"2.4 GHz receiver";
+                DescribeMouse(s, *c, ctx);
+                if (atk8kReceiver) {
+                    // Always publish this receiver's own key while it is enumerated, with no grace after removal.
+                    if (s.wirelessLink == WirelessLink::Linked || s.percent >= 0) seenNames.push_back(s.name);
+                    ctx.Add(s, vid, pid);
+                    break;
+                }
                 s.graceSec = 1800;
                 // A mouse plugged in for charging can show up twice (cable + dongle); keep one.
                 bool dup = false;
@@ -152,6 +275,20 @@ void PollKysona(PollContext& ctx) {
                     ctx.Add(s, vid, pid);
                 }
                 break;
+            }
+            if (atk8kReceiver && !ctx.IsClaimed(vid, pid)) {
+                // Products() saw this VID/PID even if every protocol exchange (or open) failed.
+                const auto receiver = std::find_if(ctx.colls.begin(), ctx.colls.end(), [=](const HidColl& c) {
+                    return c.vid == vid && c.pid == pid;
+                });
+                DeviceStatus s;
+                DescribeMouse(s, colls.empty() ? *receiver : *colls.front(), ctx);
+                s.wirelessLink = WirelessLink::Unknown;
+                ctx.Add(s, vid, pid);
+            }
+            if (trace) {
+                *trace << "scan_end battery=" << batteryResult << '\n';
+                traceFile << trace->str();
             }
         }
     }

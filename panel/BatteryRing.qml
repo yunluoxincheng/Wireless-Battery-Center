@@ -8,6 +8,7 @@ Item {
     property int size: BatteryRing.Medium
     required property int percent
     required property bool cached
+    required property bool dimmed
     required property bool charging
     required property bool dark
     required property color arcStart
@@ -30,6 +31,7 @@ Item {
         readonly property color start: ring.arcStart
         readonly property color end: ring.arcEnd
         readonly property bool cached: ring.cached
+        readonly property bool dimmed: ring.dimmed
         property real progress: ring.percent > 0 ? Math.max(0.02, Math.min(1, ring.percent / 100)) : 0
         Behavior on progress { NumberAnimation { duration: 580; easing.type: Easing.OutCubic } }
 
@@ -40,6 +42,7 @@ Item {
         onStartChanged: requestPaint()
         onEndChanged: requestPaint()
         onCachedChanged: requestPaint()
+        onDimmedChanged: requestPaint()
 
         onPaint: {
             const ctx = getContext("2d")
@@ -66,7 +69,7 @@ Item {
                 gradient.addColorStop(1, end)
                 ctx.strokeStyle = gradient
                 ctx.lineCap = "round"
-                ctx.globalAlpha = cached ? 0.58 : 1
+                ctx.globalAlpha = dimmed ? 0.58 : 1
                 ctx.beginPath()
                 ctx.arc(center, center, radius, top, top + full * progress)
                 ctx.stroke()
