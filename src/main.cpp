@@ -1125,7 +1125,7 @@ void ShowMenu() {
     DestroyMenu(m);
     switch (cmd) {
         case ID_PANEL: OpenPanel(); break;
-        case ID_REFRESH: SetEvent(g_refreshEvt); break;
+        case ID_REFRESH: ApplyPanelCommand("refresh"); break;
         case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
         case ID_HIDE_EXPIRED_OR_ASLEEP: SetHideExpiredOrAsleep(!g_hideExpiredOrAsleep); break;
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
@@ -1205,6 +1205,7 @@ DWORD WINAPI Worker(LPVOID) {
     const DWORD eventCount = g_atkWakeEvt ? ARRAYSIZE(events) : 2;
     ULONGLONG nextPoll = 0;
     ULONGLONG lastAtkPollReading = 0;
+    std::uint64_t lastManualRefresh = 0;
     for (;;) {
         const auto now = GetTickCount64();
         const DWORD wait = WaitForMultipleObjects(eventCount, events, FALSE,
@@ -1214,7 +1215,10 @@ DWORD WINAPI Worker(LPVOID) {
         if (g_atkReceiverRemoved.exchange(false)) atk8k::ReceiverRemoved();
 
         if (wait == WAIT_OBJECT_0 + 1 || GetTickCount64() >= nextPoll) {
-            auto* v = new PollResult{g_requestedRefresh.load(), epoch, g_demo ? DemoDevices() : PollAllDevices()};
+            const auto refresh = g_requestedRefresh.load();
+            auto* v = new PollResult{refresh, epoch,
+                g_demo ? DemoDevices() : PollAllDevices(refresh != lastManualRefresh)};
+            lastManualRefresh = refresh;
             v->atkActivityAvailable = !g_demo && atk8k::CanReadAfterActivity();
             const auto reading = std::find_if(v->devices.begin(), v->devices.end(), [](const auto& device) {
                 return device.key == atk8k::DeviceKey && device.percent >= 0 && !device.cached;

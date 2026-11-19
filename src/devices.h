@@ -29,7 +29,11 @@ struct DeviceStatus {
 };
 
 // Queries every supported device. Blocking (can take a second or two); call from a worker thread.
+#ifdef _WIN32
+std::vector<DeviceStatus> PollAllDevices(bool manualRefresh = false);
+#else
 std::vector<DeviceStatus> PollAllDevices();
+#endif
 
 // Prints every HID collection (for adding support for new devices).
 std::wstring DumpHidCollections();

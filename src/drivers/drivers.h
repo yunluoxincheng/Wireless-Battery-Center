@@ -15,6 +15,7 @@ struct PollContext
     std::set<std::pair<USHORT, USHORT>> claimed;
     std::set<std::wstring> btContainers; // container ids PollBluetooth already reported
     std::vector<DeviceStatus> out;
+    bool manualRefresh = false;
 
     bool IsClaimed(USHORT vid, USHORT pid) const { return claimed.count({vid, pid}) != 0; }
     void Claim(USHORT vid, USHORT pid) { claimed.insert({vid, pid}); }

@@ -37,8 +37,9 @@ std::vector<std::pair<USHORT, USHORT>> IgnoredDevices() {
 
 }  // namespace
 
-std::vector<DeviceStatus> PollAllDevices() {
+std::vector<DeviceStatus> PollAllDevices(bool manualRefresh) {
     PollContext ctx;
+    ctx.manualRefresh = manualRefresh;
     ctx.colls = EnumHid();
     auto ignored = IgnoredDevices();
     if (!ignored.empty())
