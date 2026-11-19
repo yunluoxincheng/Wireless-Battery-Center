@@ -18,6 +18,7 @@
 #include "devices.h"
 #include "i18n.h"
 #include "labels.h"
+#include "atk8k.h"
 #include "panel_ipc.h"
 #include "panel_lifecycle.h"
 #include "report.h"
@@ -29,11 +30,17 @@ constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT WM_RESULTS = WM_APP + 2;
 constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
 constexpr UINT WM_PANEL_PIPE = WM_APP + 4;
+constexpr UINT WM_ATK_RESULT = WM_APP + 5;
 constexpr UINT_PTR TIMER_RESUME_REFRESH = 1;
 constexpr UINT_PTR TIMER_WIDGET = 2;
 constexpr UINT_PTR TIMER_DEVICE_SETTLE = 3;
+constexpr UINT_PTR TIMER_ATK_WAKE = 4;
+constexpr UINT_PTR TIMER_ATK_LISTEN = 5;
 constexpr UINT DEVICE_SETTLE_MS = 2500;
 constexpr DWORD POLL_INTERVAL_MS = 60 * 1000;
+constexpr UINT ATK_WAKE_DELAY_MS = 50;
+constexpr UINT ATK_LISTEN_MS = 30 * 1000;
+constexpr UINT ATK_RETRY_COOLDOWN_MS = 30 * 1000;
 constexpr std::uint64_t READING_FRESH_MS = 180 * 1000;
 constexpr int DEFAULT_LOW_BATTERY = 15;
 constexpr UINT PLACEHOLDER_ID = 1;
@@ -55,7 +62,7 @@ const wchar_t* kSettingsKey = L"Software\\WirelessBattery";
 
 HINSTANCE g_inst;
 HWND g_hwnd;
-HANDLE g_refreshEvt, g_stopEvt, g_worker;
+HANDLE g_refreshEvt, g_stopEvt, g_atkWakeEvt, g_worker;
 UINT g_taskbarCreatedMsg;
 bool g_lightTaskbar;
 bool g_wantWidget = true;      // user's choice: taskbar widget (default) or tray icons
@@ -75,8 +82,27 @@ std::uint64_t g_completedRefresh = 0;
 
 struct PollResult {
     std::uint64_t refresh;
+    std::uint64_t atkEpoch;
     std::vector<DeviceStatus> devices;
+    bool atkActivityAvailable = false;
 };
+
+struct AtkResult {
+    ULONGLONG activityTick;
+    std::uint64_t epoch;
+    std::optional<DeviceStatus> reading;
+};
+
+// The window owns Raw Input registration and timers. The worker owns the HID connection.
+atk8k::ActivityWatch g_atkWatch;
+std::atomic<ULONGLONG> g_atkWakeRequest{0};
+std::atomic<std::uint64_t> g_atkEpoch{0};
+std::atomic<bool> g_atkReceiverRemoved{false};
+ULONGLONG g_atkActivityTick = 0;
+ULONGLONG g_atkCooldownUntil = 0;
+bool g_atkAwaitingPoll = true;
+bool g_atkListenedThisPoll = false;
+bool g_atkSuspended = false;
 
 struct TrayEntry {
     UINT uid = 0;
@@ -568,30 +594,34 @@ void RefreshReadingExpiry() {
     }
 }
 
-void OnResults(std::vector<DeviceStatus>& results) {
+void UpdateEntry(TrayEntry& e, const DeviceStatus& s, ULONGLONG tick, std::uint64_t nowMs) {
+    e.present = true;
+    e.st = s;
+    if (s.percent >= 0) {
+        e.lastPct = s.percent;
+        e.lastLevel = s.levelText;
+        if (s.readingTimeMs) {
+            // A BLE advertisement or system snapshot may be returned by several polls.
+            if (e.lastReadingMs && s.readingTimeMs <= e.lastReadingMs + 32) e.st.cached = true;
+            else e.lastReadingMs = s.readingTimeMs;
+        }
+        else if (s.connected && !s.asleep && !s.cached) e.lastReadingMs = nowMs;
+    }
+    e.lastSeen = tick;
+    UpdateReadingExpiry(e, nowMs);
+    ApplyEntry(e);
+}
+
+void OnResults(const std::vector<DeviceStatus>& results) {
     const ULONGLONG tick = GetTickCount64();
     const auto nowMs = UnixTimeMs();
     std::set<std::wstring> seen;
-    for (auto& s : results) {
+    for (const auto& s : results) {
         const auto [entry, inserted] = g_entries.try_emplace(s.key);
         auto& e = entry->second;
         if (inserted) e.uid = StableId(s.key);
-        e.present = true;
-        e.st = s;
-        if (s.percent >= 0) {
-            e.lastPct = s.percent;
-            e.lastLevel = s.levelText;
-            if (s.readingTimeMs) {
-                // A BLE advertisement or system snapshot may be returned by several polls.
-                if (e.lastReadingMs && s.readingTimeMs <= e.lastReadingMs + 32) e.st.cached = true;
-                else e.lastReadingMs = s.readingTimeMs;
-            }
-            else if (s.connected && !s.asleep && !s.cached) e.lastReadingMs = nowMs;
-        }
-        e.lastSeen = tick;
-        UpdateReadingExpiry(e, nowMs);
+        UpdateEntry(e, s, tick, nowMs);
         seen.insert(s.key);
-        ApplyEntry(e);
     }
     for (auto& [key, e] : g_entries) {
         if (!e.present || seen.count(key)) continue;
@@ -614,6 +644,64 @@ void OnResults(std::vector<DeviceStatus>& results) {
         }
     }
     ++g_pollRevision;
+    UpdatePlaceholder();
+    UpdateWidget();
+}
+
+void StopAtkListener() {
+    KillTimer(g_hwnd, TIMER_ATK_LISTEN);
+    g_atkWatch.Stop(g_hwnd);
+}
+
+void CancelAtkActivity() {
+    StopAtkListener();
+    KillTimer(g_hwnd, TIMER_ATK_WAKE);
+    g_atkActivityTick = 0;
+    g_atkWakeRequest = 0;
+}
+
+void InvalidateAtkActivity(bool removed) {
+    if (removed) g_atkReceiverRemoved = true;
+    ++g_atkEpoch;
+    CancelAtkActivity();
+    g_atkAwaitingPoll = true;
+    g_atkCooldownUntil = 0;
+}
+
+void MaybeListenForAtkActivity() {
+    if (!g_atkWakeEvt || g_demo || g_atkSuspended || g_atkAwaitingPoll || g_atkActivityTick || g_atkWatch.Armed() ||
+        g_atkListenedThisPoll || GetTickCount64() < g_atkCooldownUntil) return;
+    auto it = g_entries.find(atk8k::DeviceKey);
+    if (it == g_entries.end() || !it->second.present || !it->second.st.connected || it->second.st.asleep) return;
+
+    const auto& e = it->second;
+    if (e.st.wirelessLink == WirelessLink::Linked && e.st.percent >= 0 && !e.st.cached &&
+        UnixTimeMs() < e.lastReadingMs + POLL_INTERVAL_MS) return;
+
+    g_atkListenedThisPoll = true;
+    if (g_atkWatch.Start(g_hwnd) && !SetTimer(g_hwnd, TIMER_ATK_LISTEN, ATK_LISTEN_MS, nullptr))
+        StopAtkListener();
+}
+
+void OnAtkActivity(HRAWINPUT input) {
+    if (!g_atkWatch.IsActivity(input)) return;
+    g_atkActivityTick = GetTickCount64();
+    StopAtkListener();
+    if (!SetTimer(g_hwnd, TIMER_ATK_WAKE, ATK_WAKE_DELAY_MS, nullptr))
+        g_atkActivityTick = 0;
+}
+
+void OnAtkResult(const AtkResult& result) {
+    if (result.epoch != g_atkEpoch.load() || result.activityTick != g_atkActivityTick) return;
+    g_atkActivityTick = 0;
+    if (!result.reading) {
+        g_atkCooldownUntil = GetTickCount64() + ATK_RETRY_COOLDOWN_MS;
+        g_atkListenedThisPoll = false;
+        return;
+    }
+    auto it = g_entries.find(atk8k::DeviceKey);
+    if (it == g_entries.end() || !it->second.present || !it->second.st.connected) return;
+    UpdateEntry(it->second, *result.reading, GetTickCount64(), UnixTimeMs());
     UpdatePlaceholder();
     UpdateWidget();
 }
@@ -1113,13 +1201,40 @@ DWORD WINAPI Worker(LPVOID) {
     // At sign-in a USB receiver may enumerate before its wireless link is ready.
     constexpr DWORD startupPollDelays[] = { 3000, 7000, 15000 };
     size_t startupPoll = 0;
-    HANDLE events[2] = { g_stopEvt, g_refreshEvt };
+    HANDLE events[] = { g_stopEvt, g_refreshEvt, g_atkWakeEvt };
+    const DWORD eventCount = g_atkWakeEvt ? ARRAYSIZE(events) : 2;
+    ULONGLONG nextPoll = 0;
+    ULONGLONG lastAtkPollReading = 0;
     for (;;) {
-        auto* v = new PollResult{g_requestedRefresh.load(), g_demo ? DemoDevices() : PollAllDevices()};
-        if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
-        DWORD delay = POLL_INTERVAL_MS;
-        if (startupPoll < ARRAYSIZE(startupPollDelays)) delay = startupPollDelays[startupPoll++];
-        if (WaitForMultipleObjects(2, events, FALSE, delay) == WAIT_OBJECT_0) return 0;
+        const auto now = GetTickCount64();
+        const DWORD wait = WaitForMultipleObjects(eventCount, events, FALSE,
+            nextPoll > now ? static_cast<DWORD>(nextPoll - now) : 0);
+        if (wait == WAIT_OBJECT_0 || wait == WAIT_FAILED) return 0;
+        const auto epoch = g_atkEpoch.load();
+        if (g_atkReceiverRemoved.exchange(false)) atk8k::ReceiverRemoved();
+
+        if (wait == WAIT_OBJECT_0 + 1 || GetTickCount64() >= nextPoll) {
+            auto* v = new PollResult{g_requestedRefresh.load(), epoch, g_demo ? DemoDevices() : PollAllDevices()};
+            v->atkActivityAvailable = !g_demo && atk8k::CanReadAfterActivity();
+            const auto reading = std::find_if(v->devices.begin(), v->devices.end(), [](const auto& device) {
+                return device.key == atk8k::DeviceKey && device.percent >= 0 && !device.cached;
+            });
+            if (reading != v->devices.end()) {
+                lastAtkPollReading = GetTickCount64();
+                g_atkWakeRequest = 0;
+            }
+            if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
+            const DWORD delay = startupPoll < ARRAYSIZE(startupPollDelays)
+                ? startupPollDelays[startupPoll++] : POLL_INTERVAL_MS;
+            nextPoll = GetTickCount64() + delay;
+            // A wake event can coincide with the periodic deadline. Keep it only if this scan missed.
+            if (wait == WAIT_OBJECT_0 + 2 && g_atkWakeRequest.load()) SetEvent(g_atkWakeEvt);
+        } else if (wait == WAIT_OBJECT_0 + 2) {
+            const auto activity = g_atkWakeRequest.exchange(0);
+            if (!activity || activity <= lastAtkPollReading) continue;
+            auto* result = new AtkResult{activity, epoch, atk8k::ReadAfterActivity(activity)};
+            if (!PostMessageW(g_hwnd, WM_ATK_RESULT, 0, (LPARAM)result)) delete result;
+        }
     }
 }
 
@@ -1139,9 +1254,34 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             auto* v = reinterpret_cast<PollResult*>(lp);
             g_completedRefresh = v->refresh;
             OnResults(v->devices);
+            if (!g_atkSuspended && v->atkEpoch == g_atkEpoch.load()) {
+                g_atkAwaitingPoll = !v->atkActivityAvailable;
+                const auto it = g_entries.find(atk8k::DeviceKey);
+                if (!v->atkActivityAvailable || it == g_entries.end() || !it->second.present || !it->second.st.connected ||
+                    (it->second.st.percent >= 0 && !it->second.st.cached)) {
+                    CancelAtkActivity();
+                    g_atkCooldownUntil = 0;
+                }
+                if (g_atkWatch.Armed() && !SetTimer(h, TIMER_ATK_LISTEN, ATK_LISTEN_MS, nullptr))
+                    StopAtkListener();
+                g_atkListenedThisPoll = g_atkWatch.Armed();
+                MaybeListenForAtkActivity();
+            }
             delete v;
             return 0;
         }
+        case WM_ATK_RESULT: {
+            auto* result = reinterpret_cast<AtkResult*>(lp);
+            OnAtkResult(*result);
+            delete result;
+            return 0;
+        }
+        case WM_INPUT:
+            OnAtkActivity(reinterpret_cast<HRAWINPUT>(lp));
+            return DefWindowProcW(h, msg, wp, lp);
+        case WM_INPUT_DEVICE_CHANGE:
+            if (g_atkWatch.Armed() && !g_atkWatch.RefreshDevices()) StopAtkListener();
+            return 0;
         case WM_TRAY:
             switch (LOWORD(lp)) {
                 case WM_CONTEXTMENU:
@@ -1156,6 +1296,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp) DestroyWindow(h);
             return 0;
         case WM_DEVICECHANGE:
+            if (lp && (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE)) {
+                const auto* header = reinterpret_cast<const DEV_BROADCAST_HDR*>(lp);
+                if (header->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE &&
+                    atk8k::IsReceiverPath(reinterpret_cast<const DEV_BROADCAST_DEVICEINTERFACE_W*>(lp)->dbcc_name)) {
+                    InvalidateAtkActivity(wp == DBT_DEVICEREMOVECOMPLETE);
+                }
+            }
             if (!g_deviceSettling && (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE
                                       || wp == DBT_DEVNODES_CHANGED)) {
                 // A single device can publish several interfaces. Scan now and once more after they settle.
@@ -1164,7 +1311,15 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return TRUE;
         case WM_POWERBROADCAST:
-            if (wp == PBT_APMRESUMEAUTOMATIC) SetTimer(h, TIMER_RESUME_REFRESH, 5000, nullptr);
+            if (wp == PBT_APMSUSPEND) {
+                g_atkSuspended = true;
+                InvalidateAtkActivity(false);
+            }
+            if (wp == PBT_APMRESUMEAUTOMATIC) {
+                InvalidateAtkActivity(false);
+                g_atkSuspended = false;
+                SetTimer(h, TIMER_RESUME_REFRESH, 5000, nullptr);
+            }
             return TRUE;
         case WM_TIMER:
             if (wp == TIMER_DEVICE_SETTLE || wp == TIMER_RESUME_REFRESH) {
@@ -1175,7 +1330,16 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == TIMER_WIDGET) {
                 Reconcile();
                 RefreshReadingExpiry();
+                MaybeListenForAtkActivity();
                 panel::ExpireClient();
+            }
+            if (wp == TIMER_ATK_LISTEN) StopAtkListener();
+            if (wp == TIMER_ATK_WAKE) {
+                KillTimer(h, TIMER_ATK_WAKE);
+                if (g_atkActivityTick) {
+                    g_atkWakeRequest = g_atkActivityTick;
+                    SetEvent(g_atkWakeEvt);
+                }
             }
             return 0;
         case WM_SETTINGCHANGE:
@@ -1186,6 +1350,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             KillTimer(h, TIMER_WIDGET);
+            CancelAtkActivity();
             panel::Stop();
             panel::RequestClose(panel::FindPanelWindow());
             widget::Destroy();
@@ -1312,6 +1477,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
 
     g_refreshEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_stopEvt = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_atkWakeEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     DEV_BROADCAST_DEVICEINTERFACE_W filter{ sizeof(filter) };
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     filter.dbcc_classguid = GUID_DEVINTERFACE_HID;
@@ -1343,8 +1509,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     }
     // drain results posted after shutdown started
     while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<PollResult*>(m.lParam);
+    while (PeekMessageW(&m, nullptr, WM_ATK_RESULT, WM_ATK_RESULT, PM_REMOVE)) delete reinterpret_cast<AtkResult*>(m.lParam);
     if (notify) UnregisterDeviceNotification(notify);
     if (g_worker) CloseHandle(g_worker);
+    if (g_atkWakeEvt) CloseHandle(g_atkWakeEvt);
     CloseHandle(mutex);
     return 0;
 }

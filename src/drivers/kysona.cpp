@@ -15,12 +15,16 @@
 // Redragon ids from github.com/EliottV17/redragon-battery-omarchy and github.com/pingpingjinping/g49-web-control.
 // The older dual-mode M913 on the Areson 25A7:FA07 / FA08 receiver is handled by areson.cpp.
 #include "drivers.h"
+#ifdef _WIN32
+#include "../atk8k.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 namespace {
@@ -88,20 +92,23 @@ void TraceCollection(std::ostream& trace, const HidColl& c) {
 }
 
 // Sends `cmd` and waits for its checksummed reply.
-bool Query(HidDev& d, BYTE cmd, std::vector<BYTE>& r, std::ostream* trace, int attempt = 1) {
+bool Query(HidDev& d, BYTE cmd, std::vector<BYTE>& r, std::ostream* trace, int attempt = 1,
+           bool* pendingBattery = nullptr) {
     std::vector<BYTE> req(17, 0);
     req[0] = 0x08;
     req[1] = cmd;
     req[16] = Checksum(req.data());
     using Clock = std::chrono::steady_clock;
     const auto flushStart = trace ? Clock::now() : Clock::time_point{};
-    d.Flush();
+    // Keep queued replies when an earlier ATK request might still answer.
+    if (!pendingBattery || !*pendingBattery) d.Flush();
     const auto sendTime = trace ? UnixMs() : 0;
     const auto sendStart = trace ? Clock::now() : Clock::time_point{};
     const auto elapsed = [](auto start, auto finish) {
         return std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
     };
     const bool written = d.Write(req);
+    if (written && pendingBattery && cmd == 0x04) *pendingBattery = true;
     ULONGLONG end = GetTickCount64() + 500;
     if (trace) {
         *trace << "cmd=0x0" << (int)cmd << " attempt=" << attempt << " tx_unix_ms=" << sendTime
@@ -143,12 +150,17 @@ bool Query(HidDev& d, BYTE cmd, std::vector<BYTE>& r, std::ostream* trace, int a
             *trace << '\n';
         }
         if (size < 17) return false;
+        if (pendingBattery && r[0] == 0x08 && r[1] == 0x04 && r[16] == Checksum(r.data())) {
+            *pendingBattery = false;
+            if (trace && cmd != 0x04) *trace << "discarded_late_battery\n";
+        }
         if (!result) return true;
     }
 }
 
-bool QueryBattery(HidDev& d, std::vector<BYTE>& reply, DeviceStatus& status, std::ostream* trace, int attempt) {
-    if (!Query(d, 0x04, reply, trace, attempt)) return false;
+bool QueryBattery(HidDev& d, std::vector<BYTE>& reply, DeviceStatus& status, std::ostream* trace, int attempt,
+                  bool* pendingBattery = nullptr) {
+    if (!Query(d, 0x04, reply, trace, attempt, pendingBattery)) return false;
     status.connected = true;
     if (reply[6] <= 100) status.percent = reply[6];
     status.charging = reply[7] != 0;
@@ -179,12 +191,138 @@ void DescribeMouse(DeviceStatus& s, const HidColl& c, const PollContext& ctx) {
     s.via = IsCable(c.vid, c.pid) ? L"USB cable" : L"2.4 GHz receiver";
 }
 
+#ifdef _WIN32
+struct AtkReader {
+    HidDev device;
+    HidColl collection;
+    DeviceStatus identity;
+    bool pendingBattery = false;
+    bool activityUnambiguous = false;
+};
+AtkReader atkReader;  // Owned by the poll worker (or the standalone --list scan).
+
+bool IsAtkChannel(const HidColl& c) {
+    return c.vid == atk8k::VendorId && c.pid == atk8k::ProductId &&
+           c.page() == 0xFF02 && c.usage() == 2 && c.inLen() == 17 && c.outLen() == 17;
+}
+
+void DrainAtkBatteryReply(HidDev& d, bool& pending, std::ostream* trace) {
+    if (!pending) return;
+    const auto end = GetTickCount64() + 25;
+    std::vector<BYTE> reply;
+    while (GetTickCount64() < end) {
+        if (d.Read(reply, 25) < 0) break;
+        if (reply.size() == 17 && reply[0] == 0x08 && reply[1] == 0x04 && reply[16] == Checksum(reply.data())) {
+            pending = false;
+            if (trace) *trace << "discarded_late_battery\n";
+            break;
+        }
+    }
+}
+
+DeviceStatus ReadAtkBattery(ULONGLONG activityTick) {
+    DeviceStatus status = atkReader.identity;
+    auto& d = atkReader.device;
+    auto& pending = atkReader.pendingBattery;
+    auto traceFile = OpenAtkTrace();
+    std::ostringstream traceBuffer;
+    auto* trace = traceFile.is_open() ? &traceBuffer : nullptr;
+    if (trace) {
+        *trace << "scan vid=373B pid=101B unix_ms=" << UnixMs()
+               << " source=" << (activityTick ? "activity" : "poll") << '\n';
+    }
+    const auto read = [&] {
+        if (atkReader.collection.path.empty()) return "no_channel";
+        if (trace) TraceCollection(*trace, atkReader.collection);
+        if (!d.ok() && !d.Open(atkReader.collection)) return "open_failed";
+
+        std::vector<BYTE> reply;
+        if (!Query(d, 0x03, reply, trace, 1, &pending)) return "link_unknown";
+        if (reply[6] == 0) status.wirelessLink = WirelessLink::Unlinked;
+        if (reply[6] == 1) status.wirelessLink = WirelessLink::Linked;
+        if (status.wirelessLink != WirelessLink::Linked) return "skipped_unlinked";
+
+        // The protocol has no request ID. A lost reply cannot be distinguished from a late one
+        // after another 04. Keep this handle and consume the old reply before sending a new 04.
+        DrainAtkBatteryReply(d, pending, trace);
+        if (pending) return "waiting_for_prior_reply";
+        if (!QueryBattery(d, reply, status, trace, 1, &pending)) return "failed";
+        if (status.percent < 0) {
+            // An invalid level still completed the first transaction, so a retry is unambiguous.
+            Sleep(50);
+            if (Query(d, 0x03, reply, trace, 1, &pending) && reply[6] == 1)
+                QueryBattery(d, reply, status, trace, 2, &pending);
+        }
+        if (status.percent < 0) {
+            status.charging = false;
+            return "invalid_level";
+        }
+        status.readingTimeMs = UnixMs();
+        return "success";
+    };
+    const char* result = read();
+    if (trace) {
+        *trace << "scan_end battery=" << result;
+        if (activityTick) *trace << " after_input_ms=" << GetTickCount64() - activityTick;
+        *trace << '\n';
+        traceFile << trace->str();
+    }
+    return status;
+}
+#endif
+
 }  // namespace
 
+#ifdef _WIN32
+void atk8k::ReceiverRemoved() {
+    atkReader.device.Close();
+    atkReader.collection = {};
+    atkReader.identity = {};
+    atkReader.pendingBattery = false;
+    atkReader.activityUnambiguous = false;
+}
+
+bool atk8k::CanReadAfterActivity() { return atkReader.activityUnambiguous; }
+
+std::optional<DeviceStatus> atk8k::ReadAfterActivity(ULONGLONG activityTick) {
+    if (!CanReadAfterActivity()) return std::nullopt;
+    auto result = ReadAtkBattery(activityTick);
+    return result.percent >= 0 ? std::optional<DeviceStatus>(std::move(result)) : std::nullopt;
+}
+#endif
+
 void PollKysona(PollContext& ctx) {
+#ifdef _WIN32
+    const auto atkChannel = std::find_if(ctx.colls.begin(), ctx.colls.end(), IsAtkChannel);
+    if (atkChannel != ctx.colls.end() && atkReader.collection.path != atkChannel->path) {
+        atk8k::ReceiverRemoved();
+        atkReader.collection = *atkChannel;
+    } else if (atkChannel == ctx.colls.end() && !atkReader.collection.path.empty()) {
+        atk8k::ReceiverRemoved();
+    }
+    // The stable device key is per product. Two identical receivers cannot be routed by that key.
+    atkReader.activityUnambiguous = atkChannel != ctx.colls.end() &&
+        std::find_if(std::next(atkChannel), ctx.colls.end(), IsAtkChannel) == ctx.colls.end();
+#endif
     std::vector<std::wstring> seenNames;
     for (USHORT vendor : { (USHORT)0x3554, (USHORT)0x373B, (USHORT)0x3770, (USHORT)0x33E4, (USHORT)0x3710, (USHORT)0x35BB }) {
         for (auto [vid, pid] : ctx.Products(vendor)) {
+#ifdef _WIN32
+            if (vid == atk8k::VendorId && pid == atk8k::ProductId) {
+                const auto receiver = std::find_if(ctx.colls.begin(), ctx.colls.end(), [=](const HidColl& c) {
+                    return c.vid == vid && c.pid == pid;
+                });
+                DescribeMouse(atkReader.identity, atkChannel != ctx.colls.end() ? *atkChannel : *receiver, ctx);
+                atkReader.identity.vid = vid;
+                atkReader.identity.pid = pid;
+                atkReader.identity.wirelessLink = WirelessLink::Unknown;
+                atkReader.identity.protocol = "Kysona";
+                auto status = ReadAtkBattery(0);
+                if (status.wirelessLink == WirelessLink::Linked) seenNames.push_back(status.name);
+                ctx.Add(status, vid, pid);
+                continue;
+            }
+#endif
             // ATK N9 Pro / N9 Ultra headsets speak a serial protocol (atk_serial.cpp); never send
             // them mouse frames, even when the ATK app holds their port and they stay unclaimed.
             if (vid == 0x373B && (pid == 0x11CA || pid == 0x11CB || pid == 0x1203 || pid == 0x1204)) continue;
