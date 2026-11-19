@@ -64,6 +64,7 @@ bool g_stacked = false;      // icon above the percentage (menu option)
 bool g_brandColors = false;  // off by default; known brands get their color (Razer green, Logitech blue, ...)
 bool g_demo = false;
 int g_lowBattery = DEFAULT_LOW_BATTERY;
+bool g_lowBatteryNotifications = true;
 std::uint64_t g_pollRevision = 0;
 std::atomic<std::uint64_t> g_requestedRefresh{0};
 std::uint64_t g_completedRefresh = 0;
@@ -434,7 +435,8 @@ void ApplyEntry(TrayEntry& e) {
     const wchar_t* infoTitle = nullptr;
     std::wstring info;
     if (s.charging || shown > g_lowBattery + 10) e.lowWarned = false;
-    if (!s.charging && !s.asleep && !s.cached && s.percent >= 0 && s.percent <= g_lowBattery && !e.lowWarned) {
+    if (g_lowBatteryNotifications && !s.charging && !s.asleep && !s.cached
+        && s.percent >= 0 && s.percent <= g_lowBattery && !e.lowWarned) {
         e.lowWarned = true;
         infoTitle = T(L"Low battery");
         info = TF(L"{name} is at {percent}%", { { L"name", DisplayName(s) }, { L"percent", std::to_wstring(s.percent) } });
@@ -653,20 +655,31 @@ bool SetHidden(const std::wstring& key, bool hidden, bool panelOnly) {
     return true;
 }
 
-// Swaps a device with its neighbour in the initiating surface.
-bool MoveEntry(const std::wstring& key, int dir, bool panelOrder = false, bool includeHidden = false) {
+// Moves within the initiating surface, leaving filtered devices in their original slots.
+bool MoveEntry(const std::wstring& key, int dir, bool panelOrder = false, bool includeHidden = false,
+               const std::wstring& target = {}) {
     auto all = OrderedEntries(false, true);
-    std::vector<TrayEntry*> visible;
-    for (auto* entry : all) {
+    std::vector<TrayEntry**> slots;
+    for (auto*& entry : all) {
         if (panelOrder ? (includeHidden || !g_panelHidden.count(entry->st.key)) : IsShown(*entry))
-            visible.push_back(entry);
+            slots.push_back(&entry);
     }
-    const auto pos = std::find_if(visible.begin(), visible.end(), [&](const TrayEntry* e) { return e->st.key == key; });
-    if (pos == visible.end()) return false;
-    const ptrdiff_t neighbour = pos - visible.begin() + dir;
-    if (neighbour < 0 || neighbour >= static_cast<ptrdiff_t>(visible.size())) return false;
-    // Keep devices outside the current view in their existing slots.
-    std::iter_swap(std::find(all.begin(), all.end(), *pos), std::find(all.begin(), all.end(), visible[neighbour]));
+    const auto indexOf = [&](const std::wstring& deviceKey) {
+        const auto found = std::find_if(slots.begin(), slots.end(), [&](TrayEntry** slot) {
+            return (*slot)->st.key == deviceKey;
+        });
+        return found - slots.begin();
+    };
+    auto from = indexOf(key);
+    const auto count = static_cast<ptrdiff_t>(slots.size());
+    if (from == count) return false;
+    const auto to = target.empty() ? from + dir : indexOf(target);
+    if (to < 0 || to >= count) return false;
+    if (from == to) return true;
+    const int step = from < to ? 1 : -1;
+    auto* moving = *slots[from];
+    for (; from != to; from += step) *slots[from] = *slots[from + step];
+    *slots[to] = moving;
     std::vector<std::wstring> order;
     for (auto* e : all) order.push_back(e->st.key);
     const size_t limit = std::max<size_t>(64, order.size());
@@ -707,6 +720,12 @@ bool SetLowBattery(int threshold) {
     }
     RedrawAll();
     UpdateWidget();
+    return true;
+}
+
+bool SetLowBatteryNotifications(bool enabled) {
+    if (!SaveBoolSetting(L"LowBatteryNotifications", enabled)) return false;
+    g_lowBatteryNotifications = enabled;
     return true;
 }
 
@@ -763,6 +782,7 @@ std::string PanelSnapshot(bool ok) {
     json += ",\"refreshRequested\":" + std::to_string(g_requestedRefresh.load());
     json += ",\"refreshCompleted\":" + std::to_string(g_completedRefresh);
     json += ",\"threshold\":" + std::to_string(g_lowBattery);
+    json += ",\"lowBatteryNotifications\":" + std::string(JsonBool(g_lowBatteryNotifications));
     json += ",\"demo\":" + std::string(JsonBool(g_demo));
     json += ",\"widget\":" + std::string(JsonBool(g_wantWidget));
     json += ",\"widgetAvailable\":" + std::string(JsonBool(g_useWidget));
@@ -818,6 +838,8 @@ bool ApplyPanelCommand(std::string_view request) {
         return threshold >= 1 && threshold <= 100 && SetLowBattery(threshold);
     }
     if (hexKey.empty() && verb == "widget") return (value == "0" || value == "1") && SetMode(value == "1");
+    if (hexKey.empty() && verb == "lowBatteryNotifications")
+        return (value == "0" || value == "1") && SetLowBatteryNotifications(value == "1");
     const auto key = DecodePanelKey(hexKey);
     if (key.empty() || !g_entries.count(key)) return false;
     if (verb == "hidden" || verb == "surface") {
@@ -827,6 +849,10 @@ bool ApplyPanelCommand(std::string_view request) {
     if (verb == "move") {
         if (value == "up" || value == "down") return MoveEntry(key, value == "up" ? -1 : 1, true);
         if (value == "upAll" || value == "downAll") return MoveEntry(key, value == "upAll" ? -1 : 1, true, true);
+    }
+    if (verb == "moveTo" || verb == "moveToAll") {
+        const auto target = DecodePanelKey(value);
+        return !target.empty() && MoveEntry(key, 0, true, verb == "moveToAll", target);
     }
     if (verb == "name") {
         auto name = Utf16(value);
@@ -1221,6 +1247,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     g_refreshEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_stopEvt = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_wantWidget = LoadWidgetMode();
+    g_lowBatteryNotifications = LoadBoolSetting(L"LowBatteryNotifications", true);
     g_hideLastKnown = LoadHideLastKnown();
     g_widgetBackground = LoadWidgetBackground();
     g_brandColors = LoadBrandColors();

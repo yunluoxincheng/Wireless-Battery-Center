@@ -17,6 +17,7 @@ public:
 
 public slots:
     void toggleMaximized();
+    void updateBackdrop();
 
 private:
     static LRESULT CALLBACK subclass(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,

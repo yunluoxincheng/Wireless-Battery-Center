@@ -1,9 +1,10 @@
 pragma ComponentBehavior: Bound
 
+import QtCore
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
 import QtQuick.Layouts
+import QtQuick.Shapes
 import WirelessBattery
 
 ApplicationWindow {
@@ -15,32 +16,35 @@ ApplicationWindow {
     property bool backgroundStartFailed: false
     property bool connectedOnce: false
     property bool connectionWaitElapsed: false
-    width: 990
-    height: 690
-    minimumWidth: 600
+    property bool nativeBackdrop: false
+    width: 860
+    height: 648
+    minimumWidth: 520
     minimumHeight: 460
     title: "Wireless Battery"
-    color: canvas
+    color: "transparent"
 
     // Qt 6.8 exposes QStyleHints at runtime and declares it as QObject to qmllint.
     // qmllint disable missing-property
-    readonly property bool dark: Qt.styleHints.colorScheme === Qt.Dark
+    readonly property bool dark: appearance.themeMode === "dark"
+        || (appearance.themeMode !== "light" && Qt.styleHints.colorScheme === Qt.Dark)
     // qmllint enable missing-property
-    readonly property color canvas: dark ? "#17191D" : "#F5F4F1"
-    readonly property color surface: dark ? "#21242A" : "#FDFCFA"
-    readonly property color hoverSurface: dark ? "#2A2F37" : "#EFEEE9"
-    readonly property color ink: dark ? "#F1F2F4" : "#252A32"
-    readonly property color muted: dark ? "#B0B6C0" : "#5D6570"
-    readonly property color line: dark ? "#373C45" : "#DBDEE2"
-    readonly property color accent: dark ? "#A9C8F0" : "#365F91"
-    readonly property color accentSoft: dark ? "#2B394C" : "#E7EDF6"
-    readonly property color good: dark ? "#9DD8B9" : "#2C6C51"
-    readonly property color danger: dark ? "#F0A99A" : "#A24032"
-    readonly property int edge: width < 720 ? 24 : 36
+    readonly property color canvas: dark ? "#131822" : "#e8eff6"
+    readonly property color surface: dark ? "#242e3e" : "#f5f8fc"
+    readonly property color hoverSurface: dark ? "#23ffffff" : "#160f2845"
+    readonly property color ink: dark ? "#f4f7fc" : "#152238"
+    readonly property color muted: dark ? "#a8b7cc" : "#50627a"
+    readonly property color line: dark ? "#20ffffff" : "#190f172a"
+    readonly property color accent: dark ? "#7bd9fc" : "#11698e"
+    readonly property color accentSoft: dark ? "#283c50" : "#dcedf7"
+    readonly property color good: dark ? "#34d38b" : "#137e51"
+    readonly property color danger: dark ? "#fb7886" : "#b52b41"
+    readonly property int edge: 24
     readonly property bool ready: devices.connected && devices.snapshot.poll > 0
     readonly property bool canEdit: devices.connected && !devices.busy
     readonly property bool connectionNotice: !devices.connected
         && (backgroundStartFailed || connectedOnce || connectionWaitElapsed)
+    readonly property PanelPage subPage: pages.currentItem as PanelPage
     property int rowsRevision: 0
 
     palette.window: surface
@@ -54,6 +58,54 @@ ApplicationWindow {
     palette.highlightedText: dark ? canvas : "white"
     palette.mid: line
     palette.dark: line
+
+    Settings {
+        id: appearance
+        category: "Appearance"
+        property string themeMode: "system"
+    }
+
+    background: Rectangle {
+        color: window.nativeBackdrop ? (window.dark ? "#cc131822" : "#bdeef4fb") : window.canvas
+        // A shared field of diffused light supplies depth when the Windows backdrop is flat or unavailable.
+        Shape {
+            anchors.fill: parent
+            preferredRendererType: Shape.CurveRenderer
+            ShapePath {
+                strokeWidth: -1
+                fillGradient: RadialGradient {
+                    centerX: window.width * 0.84
+                    centerY: window.height * 0.24
+                    centerRadius: window.width * 0.64
+                    focalX: centerX
+                    focalY: centerY
+                    GradientStop { position: 0; color: window.dark ? "#35526c91" : "#55b4cbe0" }
+                    GradientStop { position: 1; color: "transparent" }
+                }
+                PathRectangle { width: window.width; height: window.height }
+            }
+            ShapePath {
+                strokeWidth: -1
+                fillGradient: RadialGradient {
+                    centerX: window.width * 0.11
+                    centerY: window.height * 0.69
+                    centerRadius: window.width * 0.50
+                    focalX: centerX
+                    focalY: centerY
+                    GradientStop { position: 0; color: window.dark ? "#294d6581" : "#c7ffffff" }
+                    GradientStop { position: 1; color: "transparent" }
+                }
+                PathRectangle { width: window.width; height: window.height }
+            }
+        }
+        Rectangle {
+            anchors.fill: parent
+            visible: window.visibility !== Window.Maximized
+            radius: 8
+            color: "transparent"
+            border.color: window.dark ? "#22ffffff" : "#dcffffff"
+        }
+    }
 
     function svg(name: string): url {
         return "qrc:/qt/qml/WirelessBattery/panel/assets/icons/lucide/" + name + ".svg"
@@ -94,7 +146,7 @@ ApplicationWindow {
     }
 
     function batteryText(device: var): string {
-        if (device.percent < 0)
+        if (device.percent === undefined || device.percent < 0)
             return qsTr("Unknown")
         switch (device.level) {
         case "Empty": return qsTr("Empty")
@@ -115,6 +167,11 @@ ApplicationWindow {
             && device.percent >= 0 && device.percent <= devices.snapshot.threshold
     }
 
+    function critical(device: var): bool {
+        // The configured alert threshold governs both colors. The lower half is a visual emphasis only.
+        return low(device) && device.percent <= Math.floor(devices.snapshot.threshold / 2)
+    }
+
     function statusText(device: var): string {
         const status = []
         if (!devices.connected)
@@ -125,6 +182,8 @@ ApplicationWindow {
             status.push(qsTr("Asleep"))
         else if (device.charging)
             status.push(qsTr("Charging"))
+        else if (critical(device))
+            status.push(qsTr("Critically low"))
         else if (low(device))
             status.push(qsTr("Low battery"))
         if (cached(device))
@@ -135,9 +194,9 @@ ApplicationWindow {
     }
 
     function readingColor(device: var): color {
-        if (cached(device) || device.percent < 0)
+        if (cached(device) || device.percent === undefined || device.percent < 0)
             return muted
-        return low(device) ? danger : device.charging ? good : ink
+        return critical(device) ? danger : low(device) ? (dark ? "#fbbf58" : "#975405") : good
     }
 
     function idText(value: int): string {
@@ -175,12 +234,12 @@ ApplicationWindow {
     }
 
     component Title: TextLabel {
-        font.pixelSize: 30
+        font.pixelSize: 21
         font.weight: Font.DemiBold
     }
 
     component SectionTitle: TextLabel {
-        font.pixelSize: 17
+        font.pixelSize: 13
         font.weight: Font.DemiBold
     }
 
@@ -190,40 +249,27 @@ ApplicationWindow {
         color: window.line
     }
 
-    component Glyph: Image {
-        id: glyph
-        property color tint: window.ink
-        fillMode: Image.PreserveAspectFit
-        sourceSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
-        layer.enabled: true
-        layer.effect: MultiEffect {
-            // Lucide's black SVG strokes provide the alpha mask for the theme color.
-            brightness: 1
-            colorization: 1
-            colorizationColor: glyph.tint
-        }
-    }
-
     component Action: Button {
         id: action
         property string symbol: ""
         property bool filled: false
-        implicitHeight: 38
+        implicitHeight: 34
         leftPadding: display === AbstractButton.IconOnly ? 8 : 12
         rightPadding: leftPadding
         spacing: 7
         font.pixelSize: 13
         font.weight: Font.DemiBold
+        focusPolicy: Qt.TabFocus
         hoverEnabled: true
         icon.source: symbol ? window.svg(symbol) : ""
         icon.width: 17
         icon.height: 17
-        icon.color: !enabled ? window.muted : filled || hovered ? window.accent : window.ink
+        icon.color: !enabled ? window.muted : window.ink
         palette.buttonText: icon.color
         background: Rectangle {
-            radius: 8
+            radius: 10
             color: action.down || (action.enabled && action.hovered) ? window.hoverSurface
-                : action.filled && action.enabled ? window.accentSoft : "transparent"
+            : action.filled && action.enabled ? (window.dark ? "#17ffffff" : "#0c0f172a") : "transparent"
             border.color: action.activeFocus ? window.accent : "transparent"
             Behavior on color { ColorAnimation { duration: 100 } }
         }
@@ -233,68 +279,132 @@ ApplicationWindow {
         Keys.onReturnPressed: clicked()
     }
 
-    component Meter: Rectangle {
-        id: meter
+    component DeviceRing: BatteryRing {
+        id: ring
         required property var device
-        implicitHeight: 4
-        radius: height / 2
-        color: window.line
-        Rectangle {
-            height: meter.height
-            width: meter.width * Math.max(0, Math.min(100, meter.device.percent)) / 100
-            radius: meter.radius
-            color: window.cached(meter.device) ? window.muted
-                : window.low(meter.device) ? window.danger
-                : meter.device.charging ? window.good : window.accent
-        }
+        dark: window.dark
+        percent: device.level || device.percent === undefined ? -1 : device.percent
+        cached: window.cached(device)
+        charging: window.devices.connected && device.charging === true
+        iconSource: window.svg(window.deviceIcon(device))
+        iconColor: cached || device.percent < 0 ? window.muted : window.ink
+        arcStart: cached ? window.muted : window.critical(device) ? (dark ? "#f26470" : "#d93848")
+            : window.low(device) ? (dark ? "#f59e0b" : "#d97706") : (dark ? "#34d38b" : "#16a366")
+        arcEnd: cached ? arcStart : window.critical(device) ? (dark ? "#fb7185" : "#ef4455")
+            : window.low(device) ? (dark ? "#fbbf24" : "#f59e0b") : (dark ? "#52e5a3" : "#22c57e")
     }
 
     component Toggle: CheckBox {
         id: toggle
+        property string description: ""
         Layout.fillWidth: true
-        implicitHeight: 43
+        implicitHeight: Math.max(54, contentItem.implicitHeight + 24)
         padding: 0
         rightPadding: 56
         nextCheckState: function() { return checkState }
-        contentItem: TextLabel {
-            text: toggle.text
-            color: toggle.enabled ? window.ink : window.muted
-            wrapMode: Text.Wrap
-            verticalAlignment: Text.AlignVCenter
+        contentItem: Item {
+            implicitHeight: toggleCopy.implicitHeight
+            ColumnLayout {
+                id: toggleCopy
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                spacing: 3
+                TextLabel {
+                    Layout.fillWidth: true
+                    text: toggle.text
+                    color: toggle.enabled ? window.ink : window.muted
+                    wrapMode: Text.Wrap
+                    font.weight: toggle.description ? Font.DemiBold : Font.Normal
+                }
+                Quiet {
+                    Layout.fillWidth: true
+                    visible: toggle.description !== ""
+                    text: toggle.description
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 12
+                }
+            }
         }
+        Accessible.description: description
         indicator: Rectangle {
             x: toggle.width - width
             anchors.verticalCenter: parent.verticalCenter
-            width: 38
-            height: 21
+            width: 46
+            height: 26
             radius: height / 2
-            color: toggle.checked && toggle.enabled ? window.accent : window.line
+            color: toggle.checked ? (window.dark ? "#2ec87e" : "#137e51") : window.hoverSurface
+            opacity: toggle.enabled ? 1 : 0.52
             border.color: toggle.activeFocus ? window.accent : "transparent"
             Rectangle {
-                x: toggle.checked ? 20 : 3
+                x: toggle.checked ? 23 : 3
                 y: 3
-                width: 15
-                height: 15
+                width: 20
+                height: 20
                 radius: height / 2
-                color: toggle.checked && toggle.enabled ? window.palette.highlightedText : window.surface
+                color: "#ffffff"
+                Behavior on x { NumberAnimation { duration: 155; easing.type: Easing.OutCubic } }
             }
         }
         Keys.onReturnPressed: clicked()
     }
 
-    component Fact: ColumnLayout {
+    component Fact: RowLayout {
         id: fact
         required property string caption
         required property string value
         Layout.fillWidth: true
-        spacing: 4
-        Quiet { text: fact.caption }
+        Layout.minimumHeight: 42
+        spacing: 16
+        TextLabel { text: fact.caption; font.weight: Font.DemiBold }
         TextLabel {
             text: fact.value
             Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            font.weight: Font.DemiBold
+            wrapMode: Text.WrapAnywhere
+            horizontalAlignment: Text.AlignRight
         }
+    }
+
+    component GlassGroup: ColumnLayout {
+        id: group
+        required property string heading
+        default property alias rows: groupRows.data
+        Layout.fillWidth: true
+        spacing: 10
+        children: [
+            SectionTitle { text: group.heading; Layout.leftMargin: 4 },
+            Control {
+                Layout.fillWidth: true
+                leftPadding: 17
+                rightPadding: 17
+                topPadding: 4
+                bottomPadding: 4
+                background: GlassSurface { dark: window.dark }
+                contentItem: ColumnLayout { id: groupRows; spacing: 0 }
+            }
+        ]
+    }
+
+    component PanelPage: ScrollView {
+        id: panelPage
+        required property int contentLimit
+        property int contentTop: 28
+        property string breadcrumb
+        default property alias rows: form.data
+
+        contentWidth: availableWidth
+        contentHeight: contentTop + form.implicitHeight + 32
+        clip: true
+        leftPadding: Math.max(window.edge, (width - contentLimit) / 2)
+        rightPadding: leftPadding
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        contentData: [
+            ColumnLayout {
+                id: form
+                y: panelPage.contentTop
+                width: panelPage.availableWidth
+                spacing: 24
+            }
+        ]
     }
 
     Shortcut {
@@ -311,10 +421,11 @@ ApplicationWindow {
         readonly property bool hot: hovered || nativeHovered
         readonly property bool pressedNow: down || nativePressed
         readonly property bool closing: mark === "close"
-        Layout.preferredWidth: 44
-        Layout.fillHeight: true
+        Layout.preferredWidth: 34
+        Layout.preferredHeight: 32
         padding: 0
         hoverEnabled: true
+        focusPolicy: Qt.TabFocus
         Accessible.name: text
         ToolTip.text: text
         ToolTip.visible: hovered && !nativeHovered
@@ -322,6 +433,7 @@ ApplicationWindow {
         Keys.onReturnPressed: clicked()
 
         background: Rectangle {
+            radius: 10
             color: control.closing && (control.hot || control.pressedNow)
                 ? (control.pressedNow ? "#AB1722" : "#C42B35")
                 : control.pressedNow ? window.accentSoft : control.hot ? window.hoverSurface : "transparent"
@@ -369,13 +481,14 @@ ApplicationWindow {
     }
 
     header: Rectangle {
-        color: window.surface
-        implicitHeight: 56
+        color: window.dark ? "#14101620" : "#22ffffff"
+        implicitHeight: 48
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: window.edge
-            spacing: 0
+            anchors.leftMargin: 14
+            anchors.rightMargin: 13
+            spacing: 2
             Action {
                 visible: pages.depth > 1
                 text: qsTr("Back to previous page")
@@ -393,37 +506,77 @@ ApplicationWindow {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 9
                     Glyph {
-                        Layout.preferredWidth: 25
-                        Layout.preferredHeight: 25
+                        Layout.preferredWidth: 19
+                        Layout.preferredHeight: 19
                         source: "qrc:/branding/app.svg"
+                        tint: window.ink
                     }
                     TextLabel {
-                        Layout.fillWidth: true
                         text: "Wireless Battery"
-                        elide: Text.ElideRight
-                        font.pixelSize: 16
+                        font.pixelSize: 14
                         font.weight: Font.DemiBold
+                    }
+                    Quiet { visible: breadcrumb.visible; text: "/" }
+                    Quiet {
+                        id: breadcrumb
+                        readonly property string current: window.subPage?.breadcrumb || ""
+                        visible: current !== ""
+                        Layout.maximumWidth: 185
+                        Layout.preferredWidth: Math.min(implicitWidth, caption.width - 170)
+                        text: current
+                        elide: Text.ElideRight
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+            }
+            Action {
+                id: refreshButton
+                Layout.leftMargin: 12
+                text: window.devices.refreshing ? qsTr("Refreshing…") : qsTr("Refresh")
+                display: AbstractButton.IconOnly
+                enabled: window.canEdit && !window.devices.refreshing && !refreshSpin.running
+                onClicked: {
+                    refreshSpin.start()
+                    window.devices.refresh()
+                }
+                contentItem: Item {
+                    implicitWidth: 17
+                    implicitHeight: 17
+                    Glyph {
+                        id: refreshGlyph
+                        anchors.centerIn: parent
+                        width: 17
+                        height: width
+                        source: window.svg("refresh-cw")
+                        tint: refreshButton.enabled || refreshSpin.running ? window.ink : window.muted
+                        NumberAnimation on rotation {
+                            id: refreshSpin
+                            running: false
+                            from: 0
+                            to: 360
+                            duration: 640
+                            onFinished: {
+                                if (window.devices.refreshing)
+                                    refreshSpin.start()
+                            }
+                        }
                     }
                 }
             }
             Action {
-                Layout.leftMargin: 12
-                text: window.devices.refreshing ? qsTr("Refreshing…") : qsTr("Refresh")
-                symbol: "refresh-cw"
-                filled: true
-                display: window.width < 700 ? AbstractButton.IconOnly : AbstractButton.TextBesideIcon
-                enabled: window.canEdit && !window.devices.refreshing
-                onClicked: window.devices.refresh()
-            }
-            Action {
-                Layout.leftMargin: 6
-                visible: pages.currentItem?.objectName !== "globalSettings"
+                filled: pages.currentItem?.objectName === "globalSettings"
                 text: qsTr("Settings")
                 symbol: "settings"
                 display: AbstractButton.IconOnly
-                onClicked: pages.push(settingsPage)
+                onClicked: filled ? pages.pop() : pages.push(settingsPage)
             }
-            Item { Layout.preferredWidth: 10 }
+            Rectangle {
+                Layout.leftMargin: 5
+                Layout.rightMargin: 5
+                Layout.preferredWidth: 1
+                Layout.preferredHeight: 14
+                color: window.line
+            }
             WindowControl {
                 text: qsTr("Minimize")
                 mark: "minimize"
@@ -481,29 +634,43 @@ ApplicationWindow {
             Layout.fillHeight: true
             clip: true
             initialItem: overview
-            pushEnter: null
-            pushExit: null
-            popEnter: null
-            popExit: null
+            pushEnter: Transition {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 180; easing.type: Easing.OutCubic }
+                NumberAnimation { property: "y"; from: 6; to: 0; duration: 180; easing.type: Easing.OutCubic }
+            }
+            popEnter: Transition {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 155; easing.type: Easing.OutCubic }
+            }
+            pushExit: Transition {}
+            popExit: Transition {}
         }
     }
 
     Component {
         id: overview
         Item {
-            ColumnLayout {
-                width: Math.min(parent.width - 2 * window.edge, 1140)
-                anchors.horizontalCenter: parent.horizontalCenter
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                anchors.topMargin: 30
-                anchors.bottomMargin: 20
-                spacing: 20
+            id: home
+            readonly property bool single: window.devices.count === 1
+            readonly property bool reorderable: window.canEdit && window.devices.count > 1
 
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 10
                 RowLayout {
                     Layout.fillWidth: true
-                    Title { text: qsTr("Devices"); Layout.fillWidth: true }
+                    Layout.leftMargin: window.edge
+                    Layout.rightMargin: window.edge
+                    Layout.topMargin: 14
+                    Layout.minimumHeight: 36
+                    Title { text: qsTr("My devices"); Layout.fillWidth: true }
+                    Quiet {
+                        visible: window.devices.connected && window.devices.count > 1
+                            && home.width >= 720 && !hiddenButton.visible
+                        text: qsTr("Drag cards to reorder")
+                        font.pixelSize: 12
+                    }
                     Action {
+                        id: hiddenButton
                         visible: window.devices.hiddenCount > 0 || window.devices.showHidden
                         text: window.devices.showHidden ? qsTr("Hide hidden devices")
                             : qsTr("Show hidden devices (%1)").arg(window.devices.hiddenCount)
@@ -512,98 +679,304 @@ ApplicationWindow {
                     }
                 }
 
-                GridView {
-                    id: grid
-                    readonly property int columns: Math.max(1, Math.floor((width + 14) / 235))
+                Flickable {
+                    id: scroller
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.rightMargin: -14
+                    contentWidth: width
+                    contentHeight: Math.max(height, grid.height + 24)
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
                     clip: true
-                    cellWidth: Math.floor(width / columns)
-                    cellHeight: 168
-                    model: window.devices
-                    keyNavigationWraps: false
-                    ScrollBar.vertical: ScrollBar {
-                        policy: grid.contentHeight > grid.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
-                    }
-                    delegate: ItemDelegate {
-                        id: tile
-                        required property var device
-                        readonly property string status: window.statusText(device)
-                        width: grid.cellWidth - 14
-                        height: grid.cellHeight - 14
-                        padding: 16
-                        hoverEnabled: true
-                        text: device.displayName
-                        Accessible.name: tile.text
-                        Accessible.description: window.kindText(device.kind) + " · " + window.batteryText(device)
-                            + (status ? " · " + status : "")
-                        onClicked: pages.push(detailPage, { deviceKey: device.key })
-                        Keys.onReturnPressed: clicked()
-                        background: Rectangle {
-                            radius: 12
-                            color: tile.down || tile.hovered ? window.hoverSurface : window.surface
-                            border.color: tile.activeFocus ? window.accent : "transparent"
-                            Behavior on color { ColorAnimation { duration: 100 } }
+                    interactive: grid.dragKey === ""
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    Item {
+                        id: grid
+                        x: (scroller.width - width) / 2
+                        y: home.single ? Math.max(8, (scroller.height - height) / 2 - 12) : 0
+                        width: home.single ? Math.min(380, scroller.width - 2 * window.edge)
+                            : Math.min(1220, scroller.width - 2 * window.edge)
+                        height: Math.max(0, Math.ceil(window.devices.count / columns) * stepY - gap)
+                        readonly property int columns: {
+                            const count = window.devices.count
+                            if (count <= 1 || width < 540)
+                                return 1
+                            return (width >= 960 && count >= 5 || width >= 1040 && count === 3) ? 3 : 2
                         }
-                        contentItem: Item {
-                            Glyph {
-                                width: 42
-                                height: 42
-                                tint: window.accent
-                                source: window.svg(window.deviceIcon(tile.device))
+                        readonly property int gap: 16
+                        readonly property real cardWidth: (width - (columns - 1) * gap) / columns
+                        readonly property real cardHeight: home.single ? 326 : scroller.width < 680 ? 208 : 234
+                        readonly property real stepX: cardWidth + gap
+                        readonly property real stepY: cardHeight + gap
+                        property string dragKey: ""
+                        property int from: -1
+                        property int to: -1
+                        property point pointer
+                        property point grabOffset
+                        property bool saving: false
+
+                        function slotX(slot: int): real { return (slot % columns) * stepX }
+                        function slotY(slot: int): real { return Math.floor(slot / columns) * stepY }
+                        function displayedSlot(index: int): int {
+                            if (from < 0 || index === from)
+                                return index
+                            if (from < to && index > from && index <= to)
+                                return index - 1
+                            if (from > to && index >= to && index < from)
+                                return index + 1
+                            return index
+                        }
+                        function updateTarget() {
+                            const position = mapFromItem(null, pointer)
+                            const column = Math.max(0, Math.min(columns - 1, Math.floor((position.x + gap / 2) / stepX)))
+                            const row = Math.max(0, Math.floor((position.y + gap / 2) / stepY))
+                            to = Math.min(window.devices.count - 1, row * columns + column)
+                        }
+                        function clearDrag() {
+                            dragKey = ""
+                            from = -1
+                            to = -1
+                            saving = false
+                        }
+                        function drop() {
+                            if (from === to || !home.reorderable) {
+                                clearDrag()
+                                return
                             }
-                            TextLabel {
-                                anchors.top: parent.top
-                                anchors.right: parent.right
-                                anchors.topMargin: 3
-                                text: window.batteryText(tile.device)
-                                color: window.readingColor(tile.device)
-                                font.pixelSize: tile.device.percent >= 0 && !tile.device.level ? 28 : 16
-                                font.weight: Font.DemiBold
+                            saving = true
+                            window.devices.moveTo(dragKey, window.devices.deviceAt(to).key)
+                        }
+
+                        onColumnsChanged: clearDrag()
+                        Connections {
+                            target: window.devices
+                            function onModelReset() { grid.clearDrag() }
+                            function onStateChanged() {
+                                if (grid.saving ? !window.devices.busy : !window.canEdit)
+                                    grid.clearDrag()
                             }
-                            TextLabel {
-                                id: name
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: statusLine.top
-                                anchors.bottomMargin: 4
-                                text: tile.text
-                                elide: Text.ElideRight
-                                font.weight: Font.DemiBold
+                        }
+                        Timer {
+                            interval: 16
+                            repeat: true
+                            running: grid.dragKey !== "" && !grid.saving && scroller.contentHeight > scroller.height
+                            onTriggered: {
+                                const y = scroller.mapFromItem(null, grid.pointer).y
+                                const delta = y < 48 ? Math.max(-16, (y - 48) / 3)
+                                    : y > scroller.height - 48 ? Math.min(16, (y - scroller.height + 48) / 3) : 0
+                                if (delta === 0)
+                                    return
+                                scroller.contentY = Math.max(0, Math.min(scroller.contentHeight - scroller.height,
+                                    scroller.contentY + delta))
+                                grid.updateTarget()
+                            }
+                        }
+
+                        Rectangle {
+                            visible: grid.from >= 0
+                            x: grid.slotX(Math.max(0, grid.to))
+                            y: grid.slotY(Math.max(0, grid.to))
+                            width: grid.cardWidth
+                            height: grid.cardHeight
+                            radius: 22
+                            color: window.dark ? "#272496c7" : "#221e93c6"
+                            Shape {
+                                anchors.fill: parent
+                                preferredRendererType: Shape.CurveRenderer
+                                ShapePath {
+                                    strokeColor: window.accent
+                                    strokeWidth: 1
+                                    strokeStyle: ShapePath.DashLine
+                                    dashPattern: [3, 4]
+                                    fillColor: "transparent"
+                                    PathRectangle {
+                                        x: 1; y: 1
+                                        width: grid.cardWidth - 2
+                                        height: grid.cardHeight - 2
+                                        radius: 21
+                                    }
+                                }
                             }
                             Quiet {
-                                id: statusLine
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: level.top
-                                anchors.bottomMargin: 8
-                                text: tile.status
-                                color: window.low(tile.device) ? window.danger : window.muted
-                                elide: Text.ElideRight
+                                x: 16; y: 12
+                                text: qsTr("Drop here")
+                                color: window.accent
+                                font.pixelSize: 12
                             }
-                            Meter {
-                                id: level
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                visible: tile.device.percent >= 0 && !tile.device.level
-                                device: tile.device
+                        }
+
+                        Repeater {
+                            model: window.devices
+                            delegate: ItemDelegate {
+                                id: tile
+                                required property int index
+                                required property var device
+                                readonly property string status: window.statusText(device)
+                                readonly property bool floating: grid.dragKey === device.key
+                                readonly property int slot: grid.displayedSlot(index)
+                                readonly property point pointerInGrid: {
+                                    scroller.contentY
+                                    return grid.mapFromItem(null, grid.pointer)
+                                }
+                                readonly property point position: floating && !grid.saving
+                                    ? Qt.point(pointerInGrid.x - grid.grabOffset.x, pointerInGrid.y - grid.grabOffset.y)
+                                    : Qt.point(grid.slotX(floating ? grid.to : slot), grid.slotY(floating ? grid.to : slot))
+
+                                x: position.x
+                                y: position.y
+                                width: grid.cardWidth
+                                height: grid.cardHeight
+                                z: floating ? 2 : hovered || activeFocus ? 1 : 0
+                                opacity: floating ? (grid.saving ? 1 : 0.86) : 1
+                                scale: floating ? 1.028 : down ? 0.992 : 1
+                                transform: Translate { y: tile.hovered && !tile.down && !tile.floating ? -2 : 0
+                                    Behavior on y { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+                                }
+                                Behavior on x {
+                                    enabled: grid.from >= 0 && (!tile.floating || grid.saving)
+                                    NumberAnimation { duration: 190; easing.type: Easing.OutCubic }
+                                }
+                                Behavior on y {
+                                    enabled: grid.from >= 0 && (!tile.floating || grid.saving)
+                                    NumberAnimation { duration: 190; easing.type: Easing.OutCubic }
+                                }
+                                Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                                Behavior on opacity { NumberAnimation { duration: 140 } }
+                                hoverEnabled: true
+                                focusPolicy: Qt.TabFocus
+                                padding: 12
+                                text: device.displayName
+                                Accessible.name: text
+                                Accessible.description: window.kindText(device.kind) + " · " + window.batteryText(device)
+                                    + (status ? " · " + status : "")
+                                onClicked: {
+                                    if (grid.dragKey === "")
+                                        pages.push(detailPage, { deviceKey: device.key })
+                                }
+                                Keys.onReturnPressed: clicked()
+                                onActiveFocusChanged: {
+                                    if (!activeFocus)
+                                        return
+                                    const top = grid.y + grid.slotY(slot)
+                                    if (top < scroller.contentY)
+                                        scroller.contentY = top
+                                    else if (top + height > scroller.contentY + scroller.height)
+                                        scroller.contentY = Math.min(scroller.contentHeight - scroller.height,
+                                            top + height - scroller.height + 6)
+                                }
+
+                                DragHandler {
+                                    id: drag
+                                    target: null
+                                    enabled: home.reorderable || tile.floating
+                                    onActiveChanged: {
+                                        if (!active)
+                                            return
+                                        grid.from = tile.index
+                                        grid.to = tile.index
+                                        grid.pointer = centroid.scenePosition
+                                        grid.grabOffset = tile.mapFromItem(null, centroid.scenePressPosition)
+                                        grid.dragKey = tile.device.key
+                                    }
+                                    onActiveTranslationChanged: {
+                                        if (!active)
+                                            return
+                                        grid.pointer = centroid.scenePosition
+                                        grid.updateTarget()
+                                    }
+                                    onGrabChanged: (transition, point) => {
+                                        if (!tile.floating || grid.saving)
+                                            return
+                                        if (transition === PointerDevice.UngrabExclusive)
+                                            grid.drop()
+                                        else if (transition === PointerDevice.CancelGrabExclusive)
+                                            grid.clearDrag()
+                                    }
+                                }
+
+                                background: GlassSurface {
+                                    dark: window.dark
+                                    radius: 22
+                                    hot: (tile.hovered && !tile.down) || tile.floating
+                                    floating: tile.floating
+                                    outline: tile.activeFocus || tile.floating ? window.accent : "transparent"
+                                }
+                                contentItem: Item {
+                                    ColumnLayout {
+                                        width: parent.width
+                                        anchors.centerIn: parent
+                                        spacing: 0
+                                        Glyph {
+                                            opacity: tile.floating || (home.reorderable && tile.hovered) ? 0.75 : 0
+                                            Layout.alignment: Qt.AlignHCenter
+                                            Layout.preferredWidth: 14
+                                            Layout.preferredHeight: 14
+                                            Layout.topMargin: -12
+                                            tint: window.muted
+                                            source: window.svg("grip-horizontal")
+                                            Behavior on opacity { NumberAnimation { duration: 130 } }
+                                        }
+                                        DeviceRing {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            size: home.single ? BatteryRing.Large
+                                                : scroller.width < 680 ? BatteryRing.Small : BatteryRing.Medium
+                                            device: tile.device
+                                        }
+                                        TextLabel {
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: home.single ? 12 : 7
+                                            horizontalAlignment: Text.AlignHCenter
+                                            text: window.batteryText(tile.device)
+                                            color: window.readingColor(tile.device)
+                                            font.pixelSize: home.single ? 34 : 27
+                                            font.weight: Font.Bold
+                                        }
+                                        TextLabel {
+                                            id: name
+                                            Layout.fillWidth: true
+                                            Layout.topMargin: 3
+                                            horizontalAlignment: Text.AlignHCenter
+                                            elide: Text.ElideRight
+                                            text: tile.text
+                                            font.pixelSize: home.single ? 16 : 15
+                                            font.weight: Font.DemiBold
+                                        }
+                                        Quiet {
+                                            Layout.fillWidth: true
+                                            Layout.minimumHeight: 18
+                                            Layout.topMargin: 4
+                                            horizontalAlignment: Text.AlignHCenter
+                                            elide: Text.ElideRight
+                                            text: tile.status
+                                            font.pixelSize: 12
+                                        }
+                                    }
+                                }
+                                ToolTip.text: tile.text
+                                ToolTip.visible: name.truncated && hovered && !floating
                             }
-                            ToolTip.text: tile.text
-                            ToolTip.visible: name.truncated && tile.hovered
                         }
                     }
 
+                    GlassSurface {
+                        visible: emptyContent.visible
+                        anchors.fill: emptyContent
+                        anchors.margins: -22
+                        dark: window.dark
+                        radius: 22
+                    }
                     ColumnLayout {
+                        id: emptyContent
                         visible: window.devices.count === 0
-                        anchors.centerIn: parent
-                        width: Math.min(parent.width - 36, 365)
-                        spacing: 8
+                        x: (scroller.width - width) / 2
+                        y: (scroller.height - height) / 2
+                        width: Math.min(scroller.width - 2 * window.edge - 44, 336)
+                        spacing: 7
                         Glyph {
                             Layout.alignment: Qt.AlignHCenter
-                            Layout.preferredWidth: 40
-                            Layout.preferredHeight: 40
+                            Layout.preferredWidth: 38
+                            Layout.preferredHeight: 38
                             tint: window.muted
                             source: window.svg("usb")
                         }
@@ -611,7 +984,8 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.Wrap
-                            text: !window.ready ? qsTr("Looking for devices…")
+                            text: window.connectionNotice ? qsTr("Waiting for the background")
+                                : !window.ready ? qsTr("Looking for devices…")
                                 : window.devices.hiddenCount ? qsTr("All devices are hidden")
                                 : qsTr("No battery devices found")
                         }
@@ -632,205 +1006,331 @@ ApplicationWindow {
 
     Component {
         id: detailPage
-        ScrollView {
+        PanelPage {
             id: page
             required property string deviceKey
             readonly property var device: {
                 window.rowsRevision
                 return window.devices.deviceByKey(deviceKey)
             }
+            readonly property string displayName: device.displayName || ""
             readonly property int orderIndex: {
                 window.rowsRevision
                 return window.devices.indexOf(deviceKey)
             }
 
-            contentWidth: availableWidth
-            clip: true
-            leftPadding: Math.max(window.edge, (width - 810) / 2)
-            rightPadding: leftPadding
-            topPadding: 28
-            bottomPadding: 28
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            contentLimit: 612
+            breadcrumb: displayName
+
+            SectionTitle {
+                visible: !page.device.key
+                text: window.ready ? qsTr("This device is no longer available") : qsTr("Looking for devices…")
+            }
+            Action {
+                visible: !page.device.key
+                text: qsTr("Back to devices")
+                symbol: "arrow-left"
+                onClicked: pages.pop()
+            }
 
             ColumnLayout {
-                width: page.availableWidth
-                spacing: 12
-
-                SectionTitle {
-                    visible: !page.device.key
-                    text: window.ready ? qsTr("This device is no longer available") : qsTr("Looking for devices…")
+                visible: !!page.device.key
+                Layout.fillWidth: true
+                spacing: 0
+                DeviceRing {
+                    Layout.alignment: Qt.AlignHCenter
+                    size: BatteryRing.Large
+                    device: page.device
                 }
-                Action {
-                    visible: !page.device.key
-                    text: qsTr("Back to devices")
-                    symbol: "arrow-left"
-                    onClicked: pages.pop()
-                }
-
-                ColumnLayout {
-                    visible: !!page.device.key
+                TextLabel {
                     Layout.fillWidth: true
-                    spacing: 12
-                    RowLayout {
+                    Layout.topMargin: 13
+                    horizontalAlignment: Text.AlignHCenter
+                    text: page.device.key ? window.batteryText(page.device) : ""
+                    color: window.readingColor(page.device)
+                    font.pixelSize: 42
+                    font.weight: Font.Bold
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.preferredWidth: Math.min(implicitWidth, page.availableWidth)
+                    Layout.maximumWidth: Math.min(implicitWidth, page.availableWidth)
+                    spacing: 4
+                    TextLabel {
                         Layout.fillWidth: true
-                        spacing: 16
-                        Glyph {
-                            Layout.preferredWidth: 44
-                            Layout.preferredHeight: 44
-                            tint: window.accent
-                            source: window.svg(page.device.key ? window.deviceIcon(page.device) : "circle-question-mark")
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Title {
-                                Layout.fillWidth: true
-                                text: page.device.displayName || ""
-                                wrapMode: Text.Wrap
-                            }
-                            Quiet {
-                                Layout.fillWidth: true
-                                wrapMode: Text.Wrap
-                                text: page.device.key
-                                    ? window.kindText(page.device.kind) + " · " + window.linkText(page.device.via) : ""
-                            }
-                        }
-                        Action {
-                            text: qsTr("Rename")
-                            filled: true
-                            enabled: window.canEdit
-                            onClicked: renameDialog.begin(page.deviceKey, page.device.alias)
-                        }
+                        text: page.displayName
+                        font.pixelSize: 20
+                        font.weight: Font.DemiBold
+                        wrapMode: Text.WrapAnywhere
+                        horizontalAlignment: Text.AlignHCenter
                     }
-
-                    Divider { }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 2
-                            SectionTitle { text: qsTr("Battery") }
-                            TextLabel {
-                                text: page.device.key ? window.batteryText(page.device) : ""
-                                color: page.device.key ? window.readingColor(page.device) : window.muted
-                                font.pixelSize: 40
-                                font.weight: Font.DemiBold
-                            }
-                        }
-                        ColumnLayout {
-                            Layout.alignment: Qt.AlignBottom
-                            spacing: 3
-                            Quiet {
-                                Layout.fillWidth: true
-                                horizontalAlignment: Text.AlignRight
-                                text: page.device.key ? window.statusText(page.device) || qsTr("Online") : ""
-                                color: page.device.key && window.low(page.device) ? window.danger : window.muted
-                            }
-                            Quiet {
-                                Layout.fillWidth: true
-                                horizontalAlignment: Text.AlignRight
-                                text: qsTr("Last battery update · %1").arg(window.timeText(page.device.updated || 0))
-                            }
-                        }
-                    }
-                    Loader {
-                        active: page.device.percent >= 0 && !page.device.level
-                        visible: active
-                        Layout.fillWidth: true
-                        sourceComponent: Meter { device: page.device }
-                    }
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: 20
-                        Fact {
-                            caption: qsTr("Charging status")
-                            value: window.devices.connected && page.device.charging ? qsTr("Charging") : qsTr("Unknown")
-                        }
-                        Fact {
-                            caption: qsTr("Sleep status")
-                            value: window.devices.connected && page.device.asleep ? qsTr("Asleep") : qsTr("Unknown")
-                        }
-                    }
-
-                    Divider { Layout.topMargin: 6 }
-                    SectionTitle { text: qsTr("Visibility and order") }
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 2
-                        Toggle {
-                            text: qsTr("Show in the panel")
-                            checked: !page.device.hidden
-                            enabled: window.canEdit
-                            onClicked: window.devices.hide(page.deviceKey, checked)
-                        }
-                        Toggle {
-                            text: qsTr("Show on the taskbar or in the tray")
-                            checked: page.device.surface === true
-                            enabled: window.canEdit
-                            onClicked: window.devices.setSurface(page.deviceKey, !checked)
-                        }
-                    }
-                    RowLayout {
-                        Action {
-                            text: qsTr("Move up")
-                            symbol: "chevron-up"
-                            enabled: window.canEdit && page.orderIndex > 0
-                            onClicked: window.devices.move(page.deviceKey, -1)
-                        }
-                        Action {
-                            text: qsTr("Move down")
-                            symbol: "chevron-down"
-                            enabled: window.canEdit && page.orderIndex >= 0 && page.orderIndex < window.devices.count - 1
-                            onClicked: window.devices.move(page.deviceKey, 1)
-                        }
-                    }
-
-                    Divider { Layout.topMargin: 6 }
-                    SectionTitle { text: qsTr("Diagnostics") }
-                    Fact {
-                        visible: !!page.device.alias
-                        caption: qsTr("Reported name")
-                        value: page.device.name || qsTr("Unknown")
-                    }
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 3
-                        columnSpacing: 20
-                        Fact { caption: "VID"; value: window.idText(page.device.vid || 0) }
-                        Fact { caption: "PID"; value: window.idText(page.device.pid || 0) }
-                        Fact { caption: qsTr("Driver / protocol"); value: page.device.protocol || qsTr("Unknown") }
+                    Action {
+                        text: qsTr("Rename")
+                        symbol: "pencil"
+                        display: AbstractButton.IconOnly
+                        enabled: window.canEdit
+                        onClicked: renameDialog.begin(page.deviceKey, page.device.alias)
                     }
                 }
+                Quiet {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: page.device.key
+                        ? (window.statusText(page.device) || qsTr("Online")) + " · " + window.linkText(page.device.via)
+                        : ""
+                }
+            }
+
+            GlassGroup {
+                visible: !!page.device.key
+                heading: qsTr("Connection and status")
+                Fact { caption: qsTr("Reported name"); value: page.device.name || qsTr("Unknown") }
+                Divider {}
+                Fact {
+                    caption: qsTr("Connection")
+                    value: page.device.key ? window.linkText(page.device.via) : qsTr("Unknown")
+                }
+                Divider {}
+                Fact {
+                    caption: qsTr("Battery reading")
+                    value: !page.device.key || page.device.percent < 0 ? qsTr("Unknown")
+                        : window.cached(page.device) ? qsTr("Last known")
+                        : window.devices.snapshot.demo === true ? qsTr("Sample") : qsTr("Live")
+                }
+                Divider {}
+                Fact {
+                    caption: qsTr("Last battery update")
+                    value: window.timeText(page.device.updated || 0)
+                }
+                Divider {}
+                Fact {
+                    caption: qsTr("Charging status")
+                    value: window.devices.connected && page.device.charging ? qsTr("Charging") : qsTr("Unknown")
+                }
+                Divider {}
+                Fact {
+                    caption: qsTr("Sleep status")
+                    value: window.devices.connected && page.device.asleep ? qsTr("Asleep") : qsTr("Unknown")
+                }
+            }
+
+            GlassGroup {
+                visible: !!page.device.key
+                heading: qsTr("Visibility and order")
+                Toggle {
+                    text: qsTr("Show in the panel")
+                    checked: !page.device.hidden
+                    enabled: window.canEdit
+                    onClicked: window.devices.hide(page.deviceKey, checked)
+                }
+                Divider {}
+                Toggle {
+                    text: qsTr("Show on the taskbar or in the tray")
+                    checked: page.device.surface === true
+                    enabled: window.canEdit
+                    onClicked: window.devices.setSurface(page.deviceKey, !checked)
+                }
+                Divider {}
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumHeight: 54
+                    TextLabel { text: qsTr("Device order"); Layout.fillWidth: true }
+                    Action {
+                        text: qsTr("Move up")
+                        symbol: "chevron-up"
+                        filled: true
+                        enabled: window.canEdit && page.orderIndex > 0
+                        onClicked: window.devices.move(page.deviceKey, -1)
+                    }
+                    Action {
+                        text: qsTr("Move down")
+                        symbol: "chevron-down"
+                        filled: true
+                        enabled: window.canEdit && page.orderIndex >= 0 && page.orderIndex < window.devices.count - 1
+                        onClicked: window.devices.move(page.deviceKey, 1)
+                    }
+                }
+            }
+
+            GlassGroup {
+                visible: !!page.device.key
+                heading: qsTr("Diagnostics")
+                Fact {
+                    caption: "VID / PID"
+                    value: window.idText(page.device.vid || 0) + " / " + window.idText(page.device.pid || 0)
+                }
+                Divider {}
+                Fact { caption: qsTr("Driver / protocol"); value: page.device.protocol || qsTr("Unknown") }
             }
         }
     }
 
     Component {
         id: settingsPage
-        ScrollView {
+        PanelPage {
             id: settings
             objectName: "globalSettings"
             readonly property int appliedThreshold: window.devices.snapshot.threshold || 15
+            readonly property bool notificationsSupported:
+                typeof window.devices.snapshot.lowBatteryNotifications === "boolean"
             property int thresholdDraft: 0 // 0 follows the backend value
             onAppliedThresholdChanged: {
                 if (thresholdDraft === appliedThreshold)
                     thresholdDraft = 0
             }
-            contentWidth: availableWidth
-            clip: true
-            leftPadding: Math.max(window.edge, (width - 660) / 2)
-            rightPadding: leftPadding
-            topPadding: 28
-            bottomPadding: 28
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            contentLimit: 632
+            contentTop: 21
+            breadcrumb: qsTr("Global settings")
 
-            ColumnLayout {
-                width: settings.availableWidth
-                spacing: 16
-                Title { text: qsTr("Settings") }
-                Divider { }
-                SectionTitle { text: qsTr("Taskbar and alerts") }
+            Title { text: settings.breadcrumb }
+
+            GlassGroup {
+                heading: qsTr("Appearance")
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumHeight: 64
+                    spacing: 12
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 8
+                        Layout.bottomMargin: 8
+                        spacing: 3
+                        TextLabel {
+                            text: qsTr("Theme mode")
+                            font.weight: Font.DemiBold
+                        }
+                        Quiet {
+                            Layout.fillWidth: true
+                            text: qsTr("Choose the panel appearance.")
+                            wrapMode: Text.Wrap
+                            font.pixelSize: 12
+                        }
+                    }
+                    Control {
+                        padding: 4
+                        background: Rectangle {
+                            radius: 12
+                            color: window.dark ? "#10ffffff" : "#0d0f172a"
+                            border.color: window.line
+                        }
+                        contentItem: RowLayout {
+                            spacing: 2
+                            Repeater {
+                                model: [
+                                    { mode: "light", label: qsTr("Light") },
+                                    { mode: "dark", label: qsTr("Dark") },
+                                    { mode: "system", label: qsTr("Follow system") }
+                                ]
+                                delegate: Action {
+                                    id: themeOption
+                                    required property var modelData
+                                    readonly property bool selected: appearance.themeMode === modelData.mode
+                                    text: modelData.label
+                                    implicitHeight: 30
+                                    font.pixelSize: 12
+                                    Accessible.role: Accessible.RadioButton
+                                    Accessible.checkable: true
+                                    Accessible.checked: selected
+                                    background: Rectangle {
+                                        radius: 8
+                                        color: themeOption.selected ? (window.dark ? "#29ffffff" : "#edffffff")
+                                            : themeOption.hovered || themeOption.down ? window.hoverSurface : "transparent"
+                                        border.color: themeOption.activeFocus ? window.accent : "transparent"
+                                    }
+                                    onClicked: appearance.themeMode = modelData.mode
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            GlassGroup {
+                heading: qsTr("Battery alerts")
+                Toggle {
+                    text: qsTr("Low battery notifications")
+                    description: window.devices.connected && !settings.notificationsSupported
+                        ? qsTr("Restart Wireless Battery with the updated background app to change this setting.")
+                        : qsTr("Show a Windows notification when a device reaches the threshold in tray mode.")
+                    checked: window.devices.snapshot.lowBatteryNotifications !== false
+                    enabled: window.canEdit && settings.notificationsSupported
+                    onClicked: window.devices.setLowBatteryNotifications(!checked)
+                }
+                Divider {}
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.minimumHeight: 72
+                    spacing: 10
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 8
+                        Layout.bottomMargin: 8
+                        spacing: 3
+                        TextLabel {
+                            Layout.fillWidth: true
+                            text: qsTr("Low battery threshold")
+                            wrapMode: Text.Wrap
+                            font.weight: Font.DemiBold
+                        }
+                        Quiet {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: qsTr("The threshold sets battery colors and low battery notifications in tray mode.")
+                            font.pixelSize: 12
+                        }
+                    }
+                    Slider {
+                        id: threshold
+                        Layout.preferredWidth: settings.width < 700 ? 100 : 132
+                        from: 1
+                        to: 100
+                        stepSize: 1
+                        enabled: window.canEdit
+                        value: settings.thresholdDraft || settings.appliedThreshold
+                        onMoved: settings.thresholdDraft = value === settings.appliedThreshold ? 0 : value
+                        Accessible.name: qsTr("Low battery threshold (%)")
+                        background: Rectangle {
+                            x: threshold.leftPadding
+                            y: (threshold.height - height) / 2
+                            width: threshold.availableWidth
+                            height: 5
+                            radius: height / 2
+                            color: window.line
+                            Rectangle {
+                                width: parent.width * threshold.visualPosition
+                                height: parent.height
+                                radius: parent.radius
+                                color: window.accent
+                            }
+                        }
+                        handle: Rectangle {
+                            x: threshold.leftPadding + threshold.visualPosition * (threshold.availableWidth - width)
+                            y: (threshold.height - height) / 2
+                            implicitWidth: 16
+                            implicitHeight: 16
+                            radius: width / 2
+                            color: "white"
+                            border.color: window.accent
+                            border.width: threshold.activeFocus || threshold.pressed ? 3 : 2
+                        }
+                    }
+                    TextLabel {
+                        Layout.minimumWidth: 38
+                        horizontalAlignment: Text.AlignRight
+                        text: qsTr("%1%").arg(threshold.value)
+                    }
+                    Action {
+                        text: qsTr("Apply")
+                        filled: true
+                        enabled: window.canEdit && settings.thresholdDraft !== 0
+                        onClicked: window.devices.setThreshold(settings.thresholdDraft)
+                    }
+                }
+            }
+
+            GlassGroup {
+                heading: qsTr("Taskbar and tray")
                 Toggle {
                     text: qsTr("Use the taskbar widget")
                     checked: window.devices.snapshot.widget === true
@@ -840,37 +1340,17 @@ ApplicationWindow {
                 Quiet {
                     visible: window.devices.snapshot.widget === true && window.devices.snapshot.widgetAvailable === false
                     Layout.fillWidth: true
+                    Layout.bottomMargin: 10
                     wrapMode: Text.Wrap
                     text: qsTr("The taskbar widget is unavailable. Devices are shown in the tray.")
                 }
-                TextLabel { text: qsTr("Low battery threshold (%)") }
-                RowLayout {
-                    SpinBox {
-                        from: 1
-                        to: 100
-                        value: settings.thresholdDraft || settings.appliedThreshold
-                        editable: true
-                        live: true
-                        onValueModified: settings.thresholdDraft = value === settings.appliedThreshold ? 0 : value
-                        Accessible.name: qsTr("Low battery threshold (%)")
-                    }
-                    Action {
-                        text: qsTr("Apply")
-                        filled: true
-                        enabled: window.canEdit && settings.thresholdDraft !== 0
-                        onClicked: window.devices.setThreshold(settings.thresholdDraft)
-                    }
-                }
-                Quiet {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    text: qsTr("The threshold sets battery colors and low battery notifications in tray mode.")
-                }
-                Divider { Layout.topMargin: 6 }
-                Action {
-                    text: qsTr("Exit Wireless Battery")
-                    onClicked: window.devices.exitApplication()
-                }
+            }
+
+            Action {
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Exit Wireless Battery")
+                filled: true
+                onClicked: window.devices.exitApplication()
             }
         }
     }
@@ -883,6 +1363,11 @@ ApplicationWindow {
         modal: true
         title: qsTr("Rename device")
         standardButtons: Dialog.Save | Dialog.Cancel
+        background: Rectangle {
+            radius: 16
+            color: window.surface
+            border.color: window.line
+        }
 
         function begin(key: string, alias: string) {
             deviceKey = key

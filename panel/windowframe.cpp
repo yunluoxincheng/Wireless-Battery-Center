@@ -29,6 +29,8 @@ WindowFrame::WindowFrame(QWindow& window)
     // Keep the system's resizable window styles and recalculate the client area.
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    connect(&window, SIGNAL(darkChanged()), this, SLOT(updateBackdrop()));
+    updateBackdrop();
 }
 
 WindowFrame::~WindowFrame() {
@@ -37,6 +39,17 @@ WindowFrame::~WindowFrame() {
 
 void WindowFrame::toggleMaximized() {
     PostMessageW(m_hwnd, WM_SYSCOMMAND, IsZoomed(m_hwnd) ? SC_RESTORE : SC_MAXIMIZE, 0);
+}
+
+void WindowFrame::updateBackdrop() {
+    // DWMSBT_TRANSIENTWINDOW supplies a single desktop acrylic backdrop for the whole client area.
+    constexpr DWORD immersiveDarkMode = 20;
+    constexpr DWORD systemBackdrop = 38;
+    constexpr DWORD desktopAcrylic = 3;
+    const BOOL dark = m_window.property("dark").toBool();
+    DwmSetWindowAttribute(m_hwnd, immersiveDarkMode, &dark, sizeof(dark));
+    const bool applied = SUCCEEDED(DwmSetWindowAttribute(m_hwnd, systemBackdrop, &desktopAcrylic, sizeof(desktopAcrylic)));
+    m_window.setProperty("nativeBackdrop", applied);
 }
 
 LRESULT CALLBACK WindowFrame::subclass(HWND, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR data) {
@@ -82,6 +95,9 @@ void WindowFrame::updateMaximizeButton(bool hovered, bool pressed) {
 
 LRESULT WindowFrame::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+        case WM_DWMCOMPOSITIONCHANGED:
+            updateBackdrop();
+            break;
         case WM_GETMINMAXINFO: {
             const auto result = DefSubclassProc(m_hwnd, message, wParam, lParam);
             auto& limits = *reinterpret_cast<MINMAXINFO*>(lParam);

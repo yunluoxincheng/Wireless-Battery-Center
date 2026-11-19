@@ -311,6 +311,102 @@
         <source>Waiting for Wireless Battery</source>
         <translation>正在等待 Wireless Battery</translation>
     </message>
+    <message>
+        <source>My devices</source>
+        <translation>我的裝置</translation>
+    </message>
+    <message>
+        <source>Drag cards to reorder</source>
+        <translation>拖曳卡片調整順序</translation>
+    </message>
+    <message>
+        <source>Drop here</source>
+        <translation>放開以置於此處</translation>
+    </message>
+    <message>
+        <source>Critically low</source>
+        <translation>電量嚴重不足</translation>
+    </message>
+    <message>
+        <source>Connection and status</source>
+        <translation>連線與狀態</translation>
+    </message>
+    <message>
+        <source>Connection</source>
+        <translation>連線方式</translation>
+    </message>
+    <message>
+        <source>Battery reading</source>
+        <translation>讀數來源</translation>
+    </message>
+    <message>
+        <source>Live</source>
+        <translation>即時硬體讀數</translation>
+    </message>
+    <message>
+        <source>Last battery update</source>
+        <translation>最後更新</translation>
+    </message>
+    <message>
+        <source>Device order</source>
+        <translation>裝置順序</translation>
+    </message>
+    <message>
+        <source>Battery alerts</source>
+        <translation>電量提醒</translation>
+    </message>
+    <message>
+        <source>Low battery threshold</source>
+        <translation>低電量閾值</translation>
+    </message>
+    <message>
+        <source>Taskbar and tray</source>
+        <translation>工作列與系統匣</translation>
+    </message>
+    <message>
+        <source>Global settings</source>
+        <translation>全域設定</translation>
+    </message>
+    <message>
+        <source>Waiting for the background</source>
+        <translation>等待背景程式連線</translation>
+    </message>
+    <message>
+        <source>Appearance</source>
+        <translation>外觀</translation>
+    </message>
+    <message>
+        <source>Theme mode</source>
+        <translation>主題模式</translation>
+    </message>
+    <message>
+        <source>Choose the panel appearance.</source>
+        <translation>選擇裝置面板的顯示主題。</translation>
+    </message>
+    <message>
+        <source>Light</source>
+        <translation>淺色</translation>
+    </message>
+    <message>
+        <source>Dark</source>
+        <translation>深色</translation>
+    </message>
+    <message>
+        <source>Follow system</source>
+        <translation>跟隨系統</translation>
+    </message>
+    <message>
+        <source>Low battery notifications</source>
+        <translation>低電量系統通知</translation>
+    </message>
+    <message>
+        <source>Restart Wireless Battery with the updated background app to change this setting.</source>
+        <translation>重新啟動新版背景程式後可變更此設定。</translation>
+    </message>
+    <message>
+        <source>Show a Windows notification when a device reaches the threshold in tray mode.</source>
+        <translation>系統匣模式下，裝置電量達到低電量閾值時傳送 Windows 通知。</translation>
+    </message>
 </context>
 <context>
     <name>DeviceModel</name>

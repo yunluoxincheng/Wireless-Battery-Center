@@ -69,6 +69,9 @@ void DeviceModel::rename(const QString& key, const QString& name) { request("nam
 void DeviceModel::hide(const QString& key, bool hidden) { request("hidden", key, hidden ? "1" : "0"); }
 void DeviceModel::setSurface(const QString& key, bool shown) { request("surface", key, shown ? "1" : "0"); }
 void DeviceModel::setThreshold(int percent) { request("threshold", {}, QByteArray::number(percent)); }
+void DeviceModel::setLowBatteryNotifications(bool enabled) {
+    request("lowBatteryNotifications", {}, enabled ? "1" : "0");
+}
 void DeviceModel::setWidget(bool enabled) { request("widget", {}, enabled ? "1" : "0"); }
 
 void DeviceModel::exitApplication() {
@@ -80,6 +83,10 @@ void DeviceModel::move(const QString& key, int direction) {
     QByteArray value = direction < 0 ? "up" : "down";
     if (m_showHidden) value += "All";
     request("move", key, value);
+}
+
+void DeviceModel::moveTo(const QString& key, const QString& targetKey) {
+    request(m_showHidden ? "moveToAll" : "moveTo", key, targetKey.toUtf8().toHex());
 }
 
 void DeviceModel::request(const QByteArray& command, const QString& key, const QByteArray& value) {

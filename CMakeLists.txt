@@ -31,8 +31,12 @@ file(GLOB LUCIDE_ICONS CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" 
 configure_file(panel/assets/icons/lucide/LICENSE LUCIDE-LICENSE.txt COPYONLY)
 qt_add_qml_module(WirelessBatteryPanel
     URI WirelessBattery
-    QML_FILES panel/Main.qml
-    RESOURCES ${LUCIDE_ICONS}
+    QML_FILES
+        panel/Main.qml
+        panel/BatteryRing.qml
+        panel/GlassSurface.qml
+        panel/Glyph.qml
+    RESOURCES ${LUCIDE_ICONS} panel/assets/glass-shadow.png
 )
 qt_add_translations(WirelessBatteryPanel
     TS_FILES panel/i18n/panel_zh_CN.ts panel/i18n/panel_zh_TW.ts

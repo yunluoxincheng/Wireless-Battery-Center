@@ -31,7 +31,7 @@ public:
     QVariantMap snapshot() const { return m_snapshot; }
     bool connected() const { return m_connected; }
     bool busy() const { return m_inFlight && m_command != "snapshot"; }
-    bool refreshing() const { return m_refreshTarget != 0; }
+    bool refreshing() const { return m_refreshTarget != 0 || (m_inFlight && m_command == "refresh"); }
     QString error() const { return m_error; }
     bool showHidden() const { return m_showHidden; }
     void setShowHidden(bool show);
@@ -44,7 +44,9 @@ public:
     Q_INVOKABLE void hide(const QString& key, bool hidden);
     Q_INVOKABLE void setSurface(const QString& key, bool shown);
     Q_INVOKABLE void move(const QString& key, int direction);
+    Q_INVOKABLE void moveTo(const QString& key, const QString& targetKey);
     Q_INVOKABLE void setThreshold(int percent);
+    Q_INVOKABLE void setLowBatteryNotifications(bool enabled);
     Q_INVOKABLE void setWidget(bool enabled);
     Q_INVOKABLE void exitApplication();
 

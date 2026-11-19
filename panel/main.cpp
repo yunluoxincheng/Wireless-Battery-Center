@@ -26,6 +26,7 @@ bool EnsureBackground() {
 
 int RunPanel(int argc, char** argv) {
     QGuiApplication app(argc, argv);
+    app.setOrganizationName(QStringLiteral("WirelessBattery"));
     app.setApplicationName(QStringLiteral("Wireless Battery"));
     const QIcon icon(QStringLiteral(":/branding/app.ico"));
     app.setWindowIcon(icon);
