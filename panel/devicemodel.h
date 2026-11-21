@@ -41,6 +41,7 @@ public:
     Q_INVOKABLE int indexOf(const QString& key) const;
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void rename(const QString& key, const QString& name);
+    Q_INVOKABLE void forget(const QString& key);
     Q_INVOKABLE void hide(const QString& key, bool hidden);
     Q_INVOKABLE void setSurface(const QString& key, bool shown);
     Q_INVOKABLE void move(const QString& key, int direction);

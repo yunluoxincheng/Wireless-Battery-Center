@@ -1,27 +1,16 @@
-# Wireless Battery
+# Wireless Battery Center
 
-[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20me-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/krisgfx)
-[![Donate with PayPal](https://img.shields.io/badge/PayPal-Donate-00457C?logo=paypal&logoColor=white)](https://www.paypal.com/paypalme/krisgfx)
-[![GitHub Sponsors](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/krisgfx9)
-[![Join our Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/ZgDDUPP8ye)
-[![Star on GitHub](https://img.shields.io/github/stars/krisgfx9/Wireless-Device-Battery-Monitor?style=flat&logo=github&label=Star)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor)
-[![Share on Reddit](https://img.shields.io/badge/Reddit-Share-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/submit?url=https%3A%2F%2Fgithub.com%2Fkrisgfx9%2FWireless-Device-Battery-Monitor&title=Wireless%20Battery%3A%20battery%20levels%20of%20your%20wireless%20devices%20on%20the%20Windows%20taskbar)
-[![Report a device](https://img.shields.io/badge/Report-a%20device-2EA44F?logo=github&logoColor=white)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/issues/new)
-[![Help translate](https://img.shields.io/badge/Help-translate-6F42C1?logo=googletranslate&logoColor=white)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/pull/129)
+Wireless Battery Center is a Windows device manager and wireless battery monitor based on
+[Wireless Battery by krisgfx9 and contributors](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor).
+It is an independently maintained derivative.
+It keeps device profiles across restarts, shows the last recorded battery level for offline devices,
+and opens official vendor drivers from the native Liquid Glass panel. The Win32 background provides
+device polling, the taskbar widget and tray battery monitoring. It covers mice, keyboards, controllers,
+Bluetooth devices and headsets supported by [HeadsetControl](https://github.com/Sapd/HeadsetControl).
 
-Battery levels of your wireless mouse, headset, keyboard and controller, right on the Windows taskbar.
+[Panel and migration guide](docs/device-panel.md) · [Windows build and release](docs/windows-release.md) · [GPL-3.0 license](LICENSE)
 
-![Wireless Battery on the taskbar](docs/screenshot.png)
-
-> **Just want it working?** Download **[WirelessBattery-Setup](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest)** from the latest release, run it and click through. That's it.
->
-> **Experienced users** can grab the portable zip, use the [command-line options](#command-line), or [build it from source](#build) with `make` or `build.bat`.
->
-> **Like it?** Wireless Battery is free and open source. If it saves you a trip into vendor software, you can support it on [Ko-fi](https://ko-fi.com/krisgfx), [PayPal](https://www.paypal.com/paypalme/krisgfx) or [GitHub Sponsors](https://github.com/sponsors/krisgfx9). It helps me keep my apps free alongside my studies. Not able to donate? A ⭐ star, sharing it, or reporting an unsupported device with a `--dump` helps just as much.
-
-- **Tiny**: a ~350 KB app using about 2 MB of RAM. It's plain C++/Win32, with no runtime and no background service, and installs in seconds without admin rights.
-- **No vendor software needed**: it talks to the devices directly. G HUB, Synapse, iCUE, GG and NGenuity can stay closed (or keep running; they don't conflict).
-- **Many brands**: Logitech, Razer, SteelSeries, Corsair, HyperX, Glorious, Jabra, JBL, PlayStation and Xbox controllers, Samsung Galaxy Buds, any Bluetooth device Windows knows a battery level for, and every headset the bundled [HeadsetControl](https://github.com/Sapd/HeadsetControl) supports.
+![Wireless Battery taskbar widget](docs/screenshot.png)
 
 ## Display
 
@@ -164,32 +153,33 @@ Also hardware-tested: EPOMAKER EA75 on its `05AC:024F` 2.4 GHz receiver, using t
 **Tested on real hardware:** Glorious Model O Wireless, HyperX Cloud III Wireless, Cooler Master MM712 (dongle), Rapoo VT3 Max Gen 2 (receiver `24AE:1417` and USB cable `24AE:4617`; other Rapoo models are untested, see [Rapoo protocol notes](docs/rapoo.md)) Redragon M916 Pro 1K (receiver `3554:F55D`), Redragon M916 Pro 1K (receiver `3554:F55D`), Taidu TSG808 (receiver `3554:F5D5`), Redragon M915RGB-WL (receiver `25A7:FA07`; other Areson models are untested, see [Areson protocol notes](docs/areson.md)), SteelSeries Rival 650 Wireless (receiver `1038:1726` and USB cable `1038:172B`), HECATE G5M PRO (receiver `35BB:D3FB`), WLMouse YING Magnesium (8K receiver `36A7:A874`), ATK N9 Ultra (receiver `373B:1204`), Corsair Scimitar Elite SE Wireless (Slipstream receiver `1B1C:2B00`), DAREU EM901X (receiver `260D:1074`; charging and sleep/wake untested), Jabra Evolve3 75 on a Link 390 (`0B0E:2E51`), MCHOSE G3 V2 (receiver `3837:4245` and USB cable `3837:418C`), MCHOSE K7 V2 Ultra+ (receiver `3837:1014` and USB cable `3837:4028`; charging shown while plugged in), AJAZZ AK820 MAX (dongle `05AC:024F`), AirPods Pro 3 (Bluetooth, model `2027`), Sprime PM1 (receiver `1915:AC1C`), MOONDROP GM01 Pro (dongle `35D8:0133`), SteelSeries Arctis Nova Pro Wireless (base station `1038:225D`; battery reading tested, charging and power transitions untested), Delux M800 Pro (receiver `248A:5B2F`), Razer Barracuda X (2022) (receiver `1532:0550`; battery level read, charging transitions untested), Razer BlackShark V3 X (HyperSpeed dongle `1532:057D`), Fantech Helios Go XD5 (dongle `25A7:FA7C`) and Corsair Dark Core RGB Pro SE (Slipstream receiver `1B1C:1BDC`), Corsair Sabre V2 Pro Ultralight (2.4 GHz receiver `1B1C:2B2A`; battery reading verified).
 **Implemented from protocol documentation and other projects, not yet tested:** everything else. If you own one of these devices, please report whether it works by [opening an issue](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/issues).
 
-## Install
+## Install on Windows
 
-[![Latest version](https://img.shields.io/github/v/release/krisgfx9/Wireless-Device-Battery-Monitor?label=latest%20version&style=for-the-badge)](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest)
+Choose the Windows x64 assets from this repository's Releases page. The first version is **v0.1.0**.
 
-1. Download **`WirelessBattery-Setup-<version>.exe`** from the [latest release](https://github.com/krisgfx9/Wireless-Device-Battery-Monitor/releases/latest).
-2. Run it and click through. It needs **no administrator rights** and **nothing else installed**: no
-   runtimes, no drivers, no vendor apps. HeadsetControl comes bundled.
+- **Setup.** Run `WirelessBatteryCenter-0.1.0-windows-x64-setup.exe`. The per-user installation
+  adds a Start menu shortcut to the panel. You can opt into starting the lightweight background when you sign in.
+- **Portable.** Extract `WirelessBatteryCenter-0.1.0-windows-x64-portable.zip` into a folder and open
+  `WirelessBatteryCenterPanel.exe`. Keep the extracted files together.
 
-The installer adds a Start menu entry and an uninstaller (*Settings → Apps*), and can start the app
-when you sign in. Prefer no installer? Download `WirelessBattery-<version>-portable.zip`, unzip it
-anywhere and run `WirelessBattery.exe`.
+Both distributions include the panel, background, Qt/QML runtime, and HeadsetControl. Use
+`SHA256SUMS.txt` to verify downloaded files. The first run copies supported legacy settings and device
+profiles into a separate Wireless Battery Center registry namespace. Uninstall preserves these settings
+and profiles. [Migration details](docs/device-panel.md) · [v0.1.0 release notes](docs/releases/v0.1.0.md)
 
-**Notes:**
-- **SmartScreen warning:** the exe is not code-signed, so Windows may say "Windows protected your PC". Click *More info → Run anyway*, or build it yourself.
-- **Tray-icon mode on Windows 11:** new tray icons go to the `^` overflow. Drag them onto the taskbar or enable them in *Settings → Personalization → Taskbar → Other system tray icons*.
-- **Keeping the app away from a device:** if a device misbehaves while the app is running, list it in the registry string `IgnoreDevices` under `HKCU\Software\WirelessBattery` as `VID:PID` pairs (hex, separated by commas, e.g. `28BD:0947, 1234:ABCD`; `--dump` shows the ids). The app then never opens it. Drawing tablets are skipped automatically.
+- The first release is unsigned. Windows SmartScreen may prompt before startup.
+- In Windows 11 tray mode, you can move icons from the overflow or enable them in **Settings → Personalization → Taskbar → Other system tray icons**.
+- Set the registry string `IgnoreDevices` under `HKCU\Software\WirelessBatteryCenter\Backend` to comma-separated hexadecimal VID:PID pairs to exclude devices from polling.
 
 ## Command line
 
 ```
-WirelessBattery.exe --list     # print every device and its battery level, then exit
-WirelessBattery.exe --dump     # every HID collection, HID devices that could not be opened, all USB devices (also ones
-                               # without a HID interface) and Bluetooth devices; also saved to %TEMP%\WirelessBattery-dump.txt
-WirelessBattery.exe --report   # open the "Request support for a device" window
-WirelessBattery.exe --demo     # sample devices of every brand instead of real ones (screenshots, checking colors)
-WirelessBattery.exe --quit     # close the running instance
+WirelessBatteryCenter.exe --list     # print every device and its battery level, then exit
+WirelessBatteryCenter.exe --dump     # every HID collection, HID devices that could not be opened, all USB devices (also ones
+                               # without a HID interface) and Bluetooth devices; also saved to %TEMP%\WirelessBatteryCenter-dump.txt
+WirelessBatteryCenter.exe --report   # open the "Request support for a device" window
+WirelessBatteryCenter.exe --demo     # sample devices of every brand instead of real ones (screenshots, checking colors)
+WirelessBatteryCenter.exe --quit     # close the running instance
 ```
 
 **Device not shown?** Right-click the widget or tray icon and choose **Request support for a device...**. Pick the device, check
@@ -200,25 +190,13 @@ the only place the app connects to the internet, and only when you click Send.
 
 ## Build
 
-You need [MinGW-w64](https://www.mingw-w64.org/), e.g. from [MSYS2](https://www.msys2.org/) (`pacman -S mingw-w64-x86_64-gcc make`).
+Use **Qt 6.8.3 MinGW x64** and the matching **MinGW-w64 13.1.0**, plus CMake and Ninja. The background
+can still be built by itself with `make` in Git Bash or `build.bat` on Windows. The packaging script builds
+both executables, deploys the Qt runtime with `windeployqt` and creates the Inno Setup installer and
+portable ZIP from one staging directory. [Build commands and release checklist](docs/windows-release.md)
 
-```
-make            # MSYS2 / any shell with make
-build.bat       # plain cmd with g++ and windres on PATH
-```
-
-To build the installer and portable zip, install [Inno Setup](https://jrsoftware.org/isinfo.php) and run
-`powershell -File installer\build-installer.ps1 -Version 1.0.0`. It downloads the pinned
-HeadsetControl release and verifies its checksum. GitHub Actions does all of this automatically:
-pushing a tag like `v1.0.0` publishes a release with the installer, the portable zip and the
-HeadsetControl source (as its GPL license requires).
-
-`WirelessBattery.exe` on its own also works. Without `headsetcontrol.exe` next to it (or on `PATH`) you
-just lose the extra headsets.
-
-The optional [Windows device manager](docs/device-panel.md) uses Qt Quick and builds separately.
-Open `WirelessBatteryPanel.exe` to start the manager and its background process. The taskbar widget
-and tray menu also offer **Open device manager**.
+Open `WirelessBatteryCenterPanel.exe` to start both the manager and its sibling background process.
+The taskbar widget and tray menu also offer **Open device manager**.
 
 ## Linux (experimental)
 
@@ -290,7 +268,7 @@ Refresh now = Aggiorna ora
 {name} is at {percent}% = {name} è al {percent}%
 ```
 
-- **Use your own language right away:** choose *Language → Add your own language...* in the menu. It opens `%APPDATA%\WirelessBattery\lang` with `_template.txt`, which lists every phrase. Copy it to e.g. `it.txt`, fill in `@code`, `@name` and the translations, and the language appears in the menu (no restart needed). A file there with the same `@code` as a built-in language replaces its phrases, so you can also fix a single word locally.
+- **Use your own language right away:** choose *Language → Add your own language...* in the menu. It opens `%APPDATA%\WirelessBatteryCenter\lang` with `_template.txt`, which lists every phrase. Copy it to e.g. `it.txt`, fill in `@code`, `@name` and the translations, and the language appears in the menu (no restart needed). A file there with the same `@code` as a built-in language replaces its phrases, so you can also fix a single word locally.
 - **Share it with everyone:** send the file as a pull request to [`lang/`](lang). The build includes every file in that folder automatically; no code change is needed.
 - Keep `{placeholders}` as they are, and add `@rtl = 1` for right-to-left scripts. Phrases left empty stay English, so a partial translation is fine.
 - The `--list` and `--dump` output stays English on purpose: it is pasted into GitHub issues.

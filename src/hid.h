@@ -36,6 +36,7 @@ struct HidColl {
     USHORT vid = 0, pid = 0;
     int iface = -1;  // USB interface number (MI_xx in the path), -1 when unknown
     HIDP_CAPS caps{};
+    std::wstring container;  // Windows physical container, shared by its HID collections
     USHORT page() const { return caps.UsagePage; }
     USHORT usage() const { return caps.Usage; }
     USHORT inLen() const { return caps.InputReportByteLength; }
@@ -44,6 +45,11 @@ struct HidColl {
 };
 
 std::vector<HidColl> EnumHid();
+inline std::wstring HidIdentity(const HidColl& c) {
+    // Include the product endpoint so a container alone cannot join a receiver to a cable.
+    if (c.container.empty()) return {};
+    return L"hid-device:" + c.container + L":" + std::to_wstring(c.vid) + L":" + std::to_wstring(c.pid);
+}
 
 class HidDev {
 public:

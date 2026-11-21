@@ -136,6 +136,7 @@ void PollGalaxyBuds(PollContext& ctx) {
         if (!ok) continue;
         DeviceStatus s;
         s.key = L"galaxybuds:" + b.addrText;
+        s.identity = s.key;
         s.name = b.name;  // the same name the Bluetooth fallback uses, so it skips these earbuds
         s.via = L"Bluetooth";
         s.kind = DeviceKind::Headset;

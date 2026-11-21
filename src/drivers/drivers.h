@@ -26,6 +26,11 @@ struct PollContext
         if (!out.back().pid) out.back().pid = pid;
         Claim(vid, pid);
     }
+    void Add(DeviceStatus s, const HidColl& source)
+    {
+        s.identity = HidIdentity(source);
+        Add(s, source.vid, source.pid);
+    }
     // Distinct (vid, pid) pairs for a vendor that are not claimed yet.
     std::vector<std::pair<USHORT, USHORT>> Products(USHORT vid) const
     {

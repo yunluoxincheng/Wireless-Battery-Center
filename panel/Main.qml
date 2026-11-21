@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtCore
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs as NativeDialogs
 import QtQuick.Layouts
 import QtQuick.Shapes
 import WirelessBattery
@@ -21,7 +22,7 @@ ApplicationWindow {
     height: 648
     minimumWidth: 520
     minimumHeight: 460
-    title: "Wireless Battery"
+    title: "Wireless Battery Center"
     color: "transparent"
 
     // Qt 6.8 exposes QStyleHints at runtime and declares it as QObject to qmllint.
@@ -146,6 +147,10 @@ ApplicationWindow {
     }
 
     function batteryText(device: var): string {
+        if (device.batteryCapability === 3)
+            return qsTr("No battery")
+        if (device.batteryCapability === 2)
+            return qsTr("Unsupported")
         if (device.percent === undefined || device.percent < 0)
             return qsTr("Unknown")
         switch (device.level) {
@@ -167,11 +172,12 @@ ApplicationWindow {
     }
 
     function dimReading(device: var): bool {
-        return !devices.connected || device.offline === true || device.asleep === true || readingExpired(device)
+        return !devices.connected || device.offline === true || device.presence === "unknown"
+            || device.asleep === true || lastKnown(device)
     }
 
     function linkUnconfirmed(device: var): bool {
-        return device.wirelessLink === "unlinked" || device.wirelessLink === "unknown"
+        return device.presence === "unknown" || device.wirelessLink === "unlinked" || device.wirelessLink === "unknown"
     }
 
     function low(device: var): bool {
@@ -518,6 +524,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 RowLayout {
+                    id: captionContent
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -529,17 +536,20 @@ ApplicationWindow {
                         tint: window.ink
                     }
                     TextLabel {
-                        text: "Wireless Battery"
+                        id: productTitle
+                        text: "Wireless Battery Center"
                         font.pixelSize: 14
                         font.weight: Font.DemiBold
                     }
-                    Quiet { visible: breadcrumb.visible; text: "/" }
+                    Quiet { id: captionSeparator; visible: breadcrumb.visible; text: "/" }
                     Quiet {
                         id: breadcrumb
                         readonly property string current: window.subPage?.breadcrumb || ""
                         visible: current !== ""
                         Layout.maximumWidth: 185
-                        Layout.preferredWidth: Math.min(implicitWidth, caption.width - 170)
+                        Layout.preferredWidth: Math.max(0, Math.min(implicitWidth,
+                            caption.width - productTitle.implicitWidth - captionSeparator.implicitWidth
+                            - 19 - 4 * captionContent.spacing))
                         text: current
                         elide: Text.ElideRight
                     }
@@ -624,8 +634,10 @@ ApplicationWindow {
         anchors.fill: parent
         spacing: 0
         Rectangle {
+            id: statusBanner
             Layout.fillWidth: true
-            readonly property bool warning: window.devices.error !== "" || window.connectionNotice
+            readonly property bool profileWarning: window.devices.connected && window.devices.snapshot.profileError === true
+            readonly property bool warning: window.devices.error !== "" || window.connectionNotice || profileWarning
             visible: warning || (window.devices.connected && window.devices.snapshot.demo === true)
             implicitHeight: notice.implicitHeight + 18
             color: warning ? window.hoverSurface : window.accentSoft
@@ -639,8 +651,9 @@ ApplicationWindow {
                 wrapMode: Text.Wrap
                 color: window.devices.error || (!window.devices.connected && window.backgroundStartFailed)
                     ? window.danger : window.ink
-                text: window.devices.error || (window.devices.connected ? qsTr("Demo mode · Sample device readings")
-                    : window.backgroundStartFailed ? qsTr("Could not start WirelessBattery.exe from this folder.")
+                text: window.devices.error || (statusBanner.profileWarning ? qsTr("Some device records could not be loaded or saved.")
+                    : window.devices.connected ? qsTr("Demo mode · Sample device readings")
+                    : window.backgroundStartFailed ? qsTr("Could not start WirelessBatteryCenter.exe from this folder.")
                     : window.connectedOnce ? qsTr("Background disconnected. Reconnecting…")
                     : qsTr("Background connection timed out. Retrying…"))
             }
@@ -1034,6 +1047,17 @@ ApplicationWindow {
             readonly property string disconnectedStatus: !window.devices.connected ? qsTr("Connection lost")
                 : device.offline ? qsTr("Offline") : ""
             readonly property string unconfirmedStatus: window.linkUnconfirmed(device) ? qsTr("Unconfirmed") : ""
+            readonly property int driverVid: device.vid || 0
+            readonly property int driverPid: device.pid || 0
+            readonly property string driverName: device.name || ""
+            readonly property var driverDevice: ({vid: driverVid, pid: driverPid, name: driverName})
+            readonly property var driver: {
+                driverRevision
+                return driverLauncher.options(driverDevice)
+            }
+            property int driverRevision: 0
+            property string driverFeedback: ""
+            property bool removing: false
             readonly property int orderIndex: {
                 window.rowsRevision
                 return window.devices.indexOf(deviceKey)
@@ -1041,6 +1065,55 @@ ApplicationWindow {
 
             contentLimit: 612
             breadcrumb: displayName
+
+            DriverLauncher { id: driverLauncher }
+
+            function openDriver(route: string) {
+                driverFeedback = driverLauncher.open(driverDevice, route)
+                ++driverRevision
+            }
+
+            function setDriver(file: url) {
+                driverFeedback = driverLauncher.setClient(driverDevice, file)
+                ++driverRevision
+            }
+
+            Connections {
+                target: window.devices
+                function onRowsChanged() {
+                    if (page.removing && !window.devices.deviceByKey(page.deviceKey).key && pages.currentItem === page)
+                        pages.pop()
+                }
+            }
+
+            NativeDialogs.FileDialog {
+                id: clientPicker
+                title: qsTr("Select the official client")
+                nameFilters: [qsTr("Windows executables (*.exe)")]
+                onAccepted: page.setDriver(selectedFile)
+            }
+
+            Dialog {
+                id: forgetDialog
+                anchors.centerIn: Overlay.overlay
+                width: Math.min(window.width - 48, 390)
+                modal: true
+                title: qsTr("Remove offline device?")
+                standardButtons: Dialog.Ok | Dialog.Cancel
+                background: Rectangle {
+                    radius: 16
+                    color: window.surface
+                    border.color: window.line
+                }
+                contentItem: Quiet {
+                    wrapMode: Text.Wrap
+                    text: qsTr("Detecting this device again will create a new record.")
+                }
+                onAccepted: {
+                    page.removing = true
+                    window.devices.forget(page.deviceKey)
+                }
+            }
 
             SectionTitle {
                 visible: !page.device.key
@@ -1104,8 +1177,64 @@ ApplicationWindow {
 
             GlassGroup {
                 visible: !!page.device.key
+                heading: qsTr("Official driver")
+                Fact {
+                    caption: qsTr("Client")
+                    value: !page.driver.label ? qsTr("No verified driver")
+                        : page.driver.client ? page.driver.label
+                        : qsTr("%1 · Not detected").arg(page.driver.label)
+                }
+                Divider { visible: !!page.driver.label }
+                Flow {
+                    visible: !!page.driver.label
+                    Layout.fillWidth: true
+                    Layout.topMargin: 12
+                    Layout.bottomMargin: 12
+                    spacing: 8
+                    Action {
+                        text: page.driver.client ? qsTr("Open client")
+                            : page.driver.web ? qsTr("Open web driver") : qsTr("Official support")
+                        symbol: "settings"
+                        filled: true
+                        onClicked: page.openDriver("preferred")
+                    }
+                    Action {
+                        visible: !!page.driver.client && !!page.driver.web
+                        text: qsTr("Open web driver")
+                        onClicked: page.openDriver("web")
+                    }
+                    Action {
+                        visible: !!page.driver.support && (!!page.driver.client || !!page.driver.web)
+                        text: qsTr("Official support")
+                        onClicked: page.openDriver("support")
+                    }
+                    Action {
+                        text: qsTr("Choose client…")
+                        onClicked: clientPicker.open()
+                    }
+                    Action {
+                        visible: !!page.driver.manual
+                        text: qsTr("Use automatic detection")
+                        onClicked: page.setDriver("")
+                    }
+                }
+                Quiet {
+                    visible: !!page.driver.manual || !!page.driverFeedback || !!page.driver.web
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: 12
+                    wrapMode: Text.Wrap
+                    text: page.driverFeedback || (page.driver.invalid ? qsTr("The saved client path is unavailable.")
+                        : page.driver.manual ? qsTr("Selected client: %1").arg(page.driver.manual)
+                        : qsTr("The web driver may require Chrome or Edge and device permission."))
+                }
+            }
+
+            GlassGroup {
+                visible: !!page.device.key
                 heading: qsTr("Connection and status")
                 Fact { caption: qsTr("Reported name"); value: page.device.name || qsTr("Unknown") }
+                Divider {}
+                Fact { caption: qsTr("Brand"); value: page.device.brand || qsTr("Unknown") }
                 Divider {}
                 Fact {
                     caption: qsTr("Connection")
@@ -1114,27 +1243,43 @@ ApplicationWindow {
                 Divider {}
                 Fact {
                     caption: qsTr("Battery reading")
-                    value: !page.device.key || page.device.percent < 0 ? qsTr("Unknown")
+                    value: page.device.percent < 0 ? window.batteryText(page.device)
                         : window.readingExpired(page.device) ? qsTr("Last known") + " · " + qsTr("Reading expired")
                         : window.lastKnown(page.device) ? qsTr("Last known")
                         : window.devices.snapshot.demo === true ? qsTr("Sample") : qsTr("Live")
                 }
                 Divider {}
                 Fact {
-                    caption: qsTr("Last battery update")
-                    value: window.timeText(page.device.updated || 0)
+                    caption: qsTr("Last valid battery reading")
+                    value: page.device.updated ? window.batteryText(page.device) + " · "
+                        + window.timeText(page.device.updated) : qsTr("Unknown")
+                }
+                Divider {}
+                Fact {
+                    caption: qsTr("Reading source")
+                    value: page.device.readingSource || qsTr("Unknown")
+                }
+                Divider {}
+                Fact {
+                    caption: qsTr("First online")
+                    value: window.timeText(page.device.firstOnline || 0)
+                }
+                Divider {}
+                Fact {
+                    caption: qsTr("Last online")
+                    value: window.timeText(page.device.lastOnline || 0)
                 }
                 Divider {}
                 Fact {
                     caption: qsTr("Charging status")
                     value: page.disconnectedStatus || (page.device.charging ? qsTr("Charging")
-                        : page.unconfirmedStatus || qsTr("Not charging"))
+                        : page.unconfirmedStatus || qsTr("Unknown"))
                 }
                 Divider {}
                 Fact {
                     caption: qsTr("Sleep status")
                     value: page.disconnectedStatus || (page.device.asleep ? qsTr("Sleeping")
-                        : page.unconfirmedStatus || qsTr("Active"))
+                        : page.unconfirmedStatus || qsTr("Unknown"))
                 }
             }
 
@@ -1147,8 +1292,9 @@ ApplicationWindow {
                     enabled: window.canEdit
                     onClicked: window.devices.hide(page.deviceKey, checked)
                 }
-                Divider {}
+                Divider { visible: page.device.surfaceSupported !== false }
                 Toggle {
+                    visible: page.device.surfaceSupported !== false
                     text: qsTr("Show on the taskbar or in the tray")
                     checked: page.device.surface === true
                     enabled: window.canEdit
@@ -1173,6 +1319,15 @@ ApplicationWindow {
                         enabled: window.canEdit && page.orderIndex >= 0 && page.orderIndex < window.devices.count - 1
                         onClicked: window.devices.move(page.deviceKey, 1)
                     }
+                }
+                Divider { visible: page.device.removable === true }
+                Action {
+                    visible: page.device.removable === true
+                    Layout.topMargin: 10
+                    Layout.bottomMargin: 10
+                    text: qsTr("Remove offline record")
+                    enabled: window.canEdit
+                    onClicked: forgetDialog.open()
                 }
             }
 
@@ -1274,7 +1429,7 @@ ApplicationWindow {
                 Toggle {
                     text: qsTr("Low battery notifications")
                     description: window.devices.connected && !settings.notificationsSupported
-                        ? qsTr("Restart Wireless Battery with the updated background app to change this setting.")
+                        ? qsTr("Restart Wireless Battery Center with the updated background app to change this setting.")
                         : qsTr("Show a Windows notification when a device reaches the threshold in tray mode.")
                     checked: window.devices.snapshot.lowBatteryNotifications !== false
                     enabled: window.canEdit && settings.notificationsSupported
@@ -1371,7 +1526,7 @@ ApplicationWindow {
 
             Action {
                 Layout.alignment: Qt.AlignRight
-                text: qsTr("Exit Wireless Battery")
+                text: qsTr("Exit Wireless Battery Center")
                 filled: true
                 onClicked: window.devices.exitApplication()
             }

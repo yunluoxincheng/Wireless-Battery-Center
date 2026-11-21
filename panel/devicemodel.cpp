@@ -66,6 +66,7 @@ void DeviceModel::setShowHidden(bool show) {
 
 void DeviceModel::refresh() { request("refresh"); }
 void DeviceModel::rename(const QString& key, const QString& name) { request("name", key, name.trimmed().toUtf8()); }
+void DeviceModel::forget(const QString& key) { request("forget", key); }
 void DeviceModel::hide(const QString& key, bool hidden) { request("hidden", key, hidden ? "1" : "0"); }
 void DeviceModel::setSurface(const QString& key, bool shown) { request("surface", key, shown ? "1" : "0"); }
 void DeviceModel::setThreshold(int percent) { request("threshold", {}, QByteArray::number(percent)); }

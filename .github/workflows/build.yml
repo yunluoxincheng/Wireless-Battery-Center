@@ -1,6 +1,7 @@
-name: build
+name: Windows build and release
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     tags: ["v*"]
@@ -11,75 +12,92 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest
+  windows:
+    runs-on: windows-2022
     steps:
       # Actions are pinned to exact commits so a moved tag cannot swap in different code.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
-          msystem: MINGW64
-          install: mingw-w64-x86_64-gcc make
+          persist-credentials: false
 
-      - name: Build WirelessBattery.exe
-        shell: msys2 {0}
-        run: make
-
-      - name: Test Rapoo protocol and driver
-        shell: msys2 {0}
-        run: make test
-
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup --no-progress -y
-
-      - name: Build installer and portable zip
+      - name: Install Qt 6.8.3 and its MinGW 13.1.0 toolchain
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF_NAME.Substring(1) } else { '0.0.0' }
-          ./installer/build-installer.ps1 -Version $version
+          $kit = Join-Path $env:RUNNER_TEMP 'Qt'
+          python -m pip install aqtinstall==3.3.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m aqt install-qt windows desktop 6.8.3 win64_mingw -O $kit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m aqt install-tool windows desktop tools_mingw1310 qt.tools.win64_mingw1310 -O $kit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "WBC_QT_KIT=$kit" >> $env:GITHUB_ENV
 
-      - name: Fetch HeadsetControl source (GPL corresponding source for the bundled binary)
+      - name: Prepare Inno Setup 6.7.4
         shell: pwsh
         run: |
-          Invoke-WebRequest https://github.com/Sapd/HeadsetControl/releases/download/4.3.0/headsetcontrol-4.3.0.tar.gz -OutFile dist/headsetcontrol-4.3.0.tar.gz
-          if ((Get-FileHash dist/headsetcontrol-4.3.0.tar.gz -Algorithm SHA256).Hash -ne '918dcacf8aef347744b36b2d259d76880fa64b3869f0f8ef26b6576b873d28a7') { throw 'checksum mismatch' }
+          $exe = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.4.exe'
+          $destination = Join-Path $env:RUNNER_TEMP 'InnoCompiler'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe' -OutFile $exe
+          if ((Get-FileHash -LiteralPath $exe).Hash -ne 'a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c') {
+            throw 'Inno Setup checksum mismatch.'
+          }
+          $process = Start-Process -FilePath $exe -ArgumentList '/PORTABLE=1', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="{0}"' -f $destination) -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Inno Setup exited $($process.ExitCode)." }
+          "WBC_ISCC=$destination\ISCC.exe" >> $env:GITHUB_ENV
+
+      - name: Build, run tests and package Windows x64
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Expected a vX.Y.Z release tag.' }
+            $env:GITHUB_REF_NAME.Substring(1)
+          }
+          $params = @{
+            QtDir = "$env:WBC_QT_KIT\6.8.3\mingw_64"
+            MingwDir = "$env:WBC_QT_KIT\Tools\mingw1310_64"
+            InnoCompiler = $env:WBC_ISCC
+            OutputDir = "$env:RUNNER_TEMP\wbc-release"
+            Version = $version
+            RunTests = $true
+          }
+          ./installer/build-installer.ps1 @params
+
+      - name: Test packaged installer, IPC and portable startup
+        shell: pwsh
+        env:
+          QT_QUICK_BACKEND: software
+        run: python tests/windows_package_test.py "$env:RUNNER_TEMP/wbc-release" "$env:RUNNER_TEMP/wbc-package-qa"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: WirelessBattery
-          path: dist/*
+          name: WirelessBatteryCenter-windows-x64
+          path: ${{ runner.temp }}/wbc-release/*
+          if-no-files-found: error
 
-  # Only this job can publish, and only for version tags pushed by the maintainer.
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+  # A maintainer publishes the draft after checking the artifacts.
+  draft-release:
+    needs: windows
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: read  # the Discord announcement reads merged PR titles
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: WirelessBattery
-          path: dist
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          files: dist/*
-          append_body: true
-          body: |
-            Enjoying Wireless Battery? Support it on [Ko-fi](https://ko-fi.com/krisgfx), [PayPal](https://www.paypal.com/paypalme/krisgfx) or [GitHub Sponsors](https://github.com/sponsors/krisgfx9).
-
-      # Announce the release on Discord: first what changed, then the newly supported devices.
-      # The webhook lives in the DISCORD_WEBHOOK repository secret, never in the code. A failed post
-      # does not fail the release.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
-      - name: Announce on Discord
-        continue-on-error: true
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/discord-release.py --tag "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: WirelessBatteryCenter-windows-x64
+          path: dist/release
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          name: Wireless Battery Center ${{ github.ref_name }}
+          draft: true
+          prerelease: true
+          body_path: docs/releases/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/release/WirelessBatteryCenter-*-windows-x64-setup.exe
+            dist/release/WirelessBatteryCenter-*-windows-x64-portable.zip
+            dist/release/headsetcontrol-4.3.0.tar.gz
+            dist/release/SHA256SUMS.txt

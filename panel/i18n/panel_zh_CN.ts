@@ -32,8 +32,8 @@
         <translation>返回上一页</translation>
     </message>
     <message>
-        <source>Could not start WirelessBattery.exe from this folder.</source>
-        <translation>无法启动同目录的 WirelessBattery.exe。</translation>
+        <source>Could not start WirelessBatteryCenter.exe from this folder.</source>
+        <translation>无法启动同目录的 WirelessBatteryCenter.exe。</translation>
     </message>
     <message>
         <source>Connecting to the background. Previous readings are shown as last known.</source>
@@ -52,8 +52,8 @@
         <translation>返回设备总览</translation>
     </message>
     <message>
-        <source>Exit Wireless Battery</source>
-        <translation>退出 Wireless Battery</translation>
+        <source>Exit Wireless Battery Center</source>
+        <translation>退出 Wireless Battery Center</translation>
     </message>
     <message>
         <source>%1 shown</source>
@@ -292,8 +292,8 @@
         <translation>休眠状态</translation>
     </message>
     <message>
-        <source>Start WirelessBattery.exe to connect. Previous readings are shown as last known.</source>
-        <translation>启动 WirelessBattery.exe 后即可连接。已有电量将标记为上次读数。</translation>
+        <source>Start WirelessBatteryCenter.exe to connect. Previous readings are shown as last known.</source>
+        <translation>启动 WirelessBatteryCenter.exe 后即可连接。已有电量将标记为上次读数。</translation>
     </message>
     <message>
         <source>Taskbar and alerts</source>
@@ -332,8 +332,8 @@
         <translation>显示与排序</translation>
     </message>
     <message>
-        <source>Waiting for Wireless Battery</source>
-        <translation>正在等待 Wireless Battery</translation>
+        <source>Waiting for Wireless Battery Center</source>
+        <translation>正在等待 Wireless Battery Center</translation>
     </message>
     <message>
         <source>My devices</source>
@@ -424,12 +424,112 @@
         <translation>低电量系统通知</translation>
     </message>
     <message>
-        <source>Restart Wireless Battery with the updated background app to change this setting.</source>
+        <source>Restart Wireless Battery Center with the updated background app to change this setting.</source>
         <translation>重新启动新版后台后可更改此设置。</translation>
     </message>
     <message>
         <source>Show a Windows notification when a device reaches the threshold in tray mode.</source>
         <translation>托盘模式下，设备电量达到低电量阈值时发送 Windows 通知。</translation>
+    </message>
+    <message>
+        <source>No battery</source>
+        <translation>无电池</translation>
+    </message>
+    <message>
+        <source>Unsupported</source>
+        <translation>不支持读取</translation>
+    </message>
+    <message>
+        <source>Some device records could not be loaded or saved.</source>
+        <translation>部分设备档案读取或保存失败。</translation>
+    </message>
+    <message>
+        <source>Select the official client</source>
+        <translation>选择官方客户端</translation>
+    </message>
+    <message>
+        <source>Windows executables (*.exe)</source>
+        <translation>Windows 可执行文件 (*.exe)</translation>
+    </message>
+    <message>
+        <source>Remove offline device?</source>
+        <translation>移除离线设备？</translation>
+    </message>
+    <message>
+        <source>Detecting this device again will create a new record.</source>
+        <translation>再次识别到设备时会创建新档案。</translation>
+    </message>
+    <message>
+        <source>Official driver</source>
+        <translation>官方驱动</translation>
+    </message>
+    <message>
+        <source>Client</source>
+        <translation>客户端</translation>
+    </message>
+    <message>
+        <source>No verified driver</source>
+        <translation>暂无已核实的驱动</translation>
+    </message>
+    <message>
+        <source>%1 · Not detected</source>
+        <translation>%1 · 未检测到</translation>
+    </message>
+    <message>
+        <source>Open client</source>
+        <translation>打开客户端</translation>
+    </message>
+    <message>
+        <source>Open web driver</source>
+        <translation>打开网页驱动</translation>
+    </message>
+    <message>
+        <source>Official support</source>
+        <translation>官方支持</translation>
+    </message>
+    <message>
+        <source>Choose client…</source>
+        <translation>选择客户端…</translation>
+    </message>
+    <message>
+        <source>Use automatic detection</source>
+        <translation>恢复自动检测</translation>
+    </message>
+    <message>
+        <source>The saved client path is unavailable.</source>
+        <translation>已保存的客户端路径不可用。</translation>
+    </message>
+    <message>
+        <source>Selected client: %1</source>
+        <translation>已选择客户端：%1</translation>
+    </message>
+    <message>
+        <source>The web driver may require Chrome or Edge and device permission.</source>
+        <translation>网页驱动可能需要 Chrome 或 Edge，并需要授权访问设备。</translation>
+    </message>
+    <message>
+        <source>Brand</source>
+        <translation>品牌</translation>
+    </message>
+    <message>
+        <source>Last valid battery reading</source>
+        <translation>最后有效电量</translation>
+    </message>
+    <message>
+        <source>Reading source</source>
+        <translation>读数来源</translation>
+    </message>
+    <message>
+        <source>First online</source>
+        <translation>首次在线</translation>
+    </message>
+    <message>
+        <source>Last online</source>
+        <translation>最后在线</translation>
+    </message>
+    <message>
+        <source>Remove offline record</source>
+        <translation>移除离线档案</translation>
     </message>
 </context>
 <context>
@@ -445,6 +545,57 @@
     <message>
         <source>The connection was interrupted. Check the current setting and try again.</source>
         <translation>连接已断开。请确认当前设置后重试。</translation>
+    </message>
+</context>
+<context>
+    <name>DriverLauncher</name>
+    <message>
+        <source>No verified official driver is available.</source>
+        <translation>暂无已核实的官方驱动。</translation>
+    </message>
+    <message>
+        <source>Choose an existing local Windows executable (.exe).</source>
+        <translation>请选择本地已有的 Windows 可执行文件 (.exe)。</translation>
+    </message>
+    <message>
+        <source>Could not save the client path.</source>
+        <translation>无法保存客户端路径。</translation>
+    </message>
+    <message>
+        <source>Could not open the web driver.</source>
+        <translation>无法打开网页驱动。</translation>
+    </message>
+    <message>
+        <source>Could not open official support.</source>
+        <translation>无法打开官方支持页面。</translation>
+    </message>
+    <message>
+        <source>Client could not start. Opened the official web driver.</source>
+        <translation>客户端启动失败，已打开官方网页驱动。</translation>
+    </message>
+    <message>
+        <source>Saved client is unavailable. Opened the official web driver.</source>
+        <translation>已保存的客户端不可用，已打开官方网页驱动。</translation>
+    </message>
+    <message>
+        <source>Client could not start. Opened official support.</source>
+        <translation>客户端启动失败，已打开官方支持页面。</translation>
+    </message>
+    <message>
+        <source>Saved client is unavailable. Opened official support.</source>
+        <translation>已保存的客户端不可用，已打开官方支持页面。</translation>
+    </message>
+    <message>
+        <source>Web driver could not open. Opened official support.</source>
+        <translation>无法打开网页驱动，已打开官方支持页面。</translation>
+    </message>
+    <message>
+        <source>Client could not start and no official page could be opened.</source>
+        <translation>客户端启动失败，官方页面也无法打开。</translation>
+    </message>
+    <message>
+        <source>Could not open an official driver.</source>
+        <translation>无法打开官方驱动入口。</translation>
     </message>
 </context>
 </TS>

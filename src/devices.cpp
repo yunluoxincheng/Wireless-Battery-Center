@@ -4,21 +4,88 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
+#include <map>
 
 #include "drivers/drivers.h"
 #include "report.h"
 #include "hid.h"
+#include "product.h"
 
 namespace {
 
-// HKCU\Software\WirelessBattery\IgnoreDevices (REG_SZ): "VID:PID" pairs in hex, separated by spaces,
+void IdentifyPanelDevices(PollContext& ctx, std::set<std::wstring>& endpoints) {
+    using Product = std::pair<USHORT, USHORT>;
+    std::map<Product, std::set<std::wstring>> containers;
+    for (const auto& c : ctx.colls) {
+        auto identity = HidIdentity(c);
+        if (!identity.empty()) endpoints.insert(identity);
+        containers[{c.vid, c.pid}].insert(std::move(identity));
+    }
+
+    std::set<std::wstring> reported;
+    std::map<Product, size_t> counts;
+    for (const auto& s : ctx.out) ++counts[{s.vid, s.pid}];
+    for (auto& s : ctx.out) {
+        if (s.identity.empty() && counts[{s.vid, s.pid}] == 1 &&
+            std::strcmp(s.protocol, "XInput") && std::strcmp(s.protocol, "Logitech HID++")) {
+            const auto found = containers.find({s.vid, s.pid});
+            if (found != containers.end() && found->second.size() == 1)
+                s.identity = *found->second.begin();
+        }
+        if (!s.identity.empty()) reported.insert(s.identity);
+    }
+
+    // Exact, verified USB products only. A HID mouse/keyboard collection by itself could
+    // belong to a system node, a multimedia interface or an idle wireless receiver.
+    static constexpr struct {
+        USHORT vid, pid;
+        const wchar_t* name;
+        DeviceKind kind;
+        BatteryCapability battery;
+        bool receiver;
+    } known[] = {
+        {0x35BB, 0xA008, L"HECATE G5 Wireless", DeviceKind::Headset, BatteryCapability::Unsupported, true},
+        {0x413C, 0x2113, L"Dell KB216", DeviceKind::Keyboard, BatteryCapability::None, false},
+        {0x046D, 0xC084, L"Logitech G203", DeviceKind::Mouse, BatteryCapability::None, false},
+        {0x046D, 0xC092, L"Logitech G102/G203 LIGHTSYNC", DeviceKind::Mouse, BatteryCapability::None, false},
+        {0x046D, 0xC09D, L"Logitech G102 LIGHTSYNC", DeviceKind::Mouse, BatteryCapability::None, false},
+    };
+    for (const auto& c : ctx.colls) {
+        const auto model = std::find_if(std::begin(known), std::end(known), [&](const auto& item) {
+            return c.vid == item.vid && c.pid == item.pid;
+        });
+        if (model == std::end(known)) continue;
+        auto identity = HidIdentity(c);
+        if (identity.empty() || !reported.insert(identity).second) continue;
+        DeviceStatus s;
+        s.key = s.identity = std::move(identity);
+        s.name = model->name;
+        s.kind = model->kind;
+        s.vid = c.vid;
+        s.pid = c.pid;
+        s.via = model->receiver ? L"2.4 GHz receiver" : L"USB cable";
+        s.wirelessLink = model->receiver ? WirelessLink::Unknown : WirelessLink::Unreported;
+        s.battery = model->battery;
+        s.panelOnly = true;
+        s.protocol = "Windows HID";
+        ctx.out.push_back(std::move(s));
+    }
+}
+
+// IgnoreDevices (REG_SZ): "VID:PID" pairs in hex, separated by spaces,
 // commas or semicolons (e.g. "28BD:0947, 046D:C547"). No driver ever opens those devices (issue #232).
 std::vector<std::pair<USHORT, USHORT>> IgnoredDevices() {
     std::vector<std::pair<USHORT, USHORT>> out;
     wchar_t buf[1024];
     DWORD size = sizeof(buf);
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\WirelessBattery", L"IgnoreDevices", RRF_RT_REG_SZ, nullptr, buf, &size) !=
+    const auto* path = product::SettingsKey;
+    HKEY settings;
+    const auto opened = RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_QUERY_VALUE, &settings);
+    if (opened == ERROR_SUCCESS) RegCloseKey(settings);
+    else if (opened == ERROR_FILE_NOT_FOUND) path = product::LegacySettingsKey; // CLI before first import
+    if (RegGetValueW(HKEY_CURRENT_USER, path, L"IgnoreDevices", RRF_RT_REG_SZ, nullptr, buf, &size) !=
         ERROR_SUCCESS)
         return out;
     for (const wchar_t* p = buf; *p;) {
@@ -37,7 +104,7 @@ std::vector<std::pair<USHORT, USHORT>> IgnoredDevices() {
 
 }  // namespace
 
-std::vector<DeviceStatus> PollAllDevices(bool manualRefresh) {
+std::vector<DeviceStatus> PollAllDevices(bool manualRefresh, std::set<std::wstring>* endpoints) {
     PollContext ctx;
     ctx.manualRefresh = manualRefresh;
     ctx.colls = EnumHid();
@@ -127,6 +194,7 @@ std::vector<DeviceStatus> PollAllDevices(bool manualRefresh) {
     run(PollGenericHid, "HID battery report");
     RUN_DRIVER(PollXInput);
 #undef RUN_DRIVER
+    if (endpoints) IdentifyPanelDevices(ctx, *endpoints);
     return ctx.out;
 }
 

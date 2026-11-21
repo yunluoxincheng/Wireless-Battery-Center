@@ -1,6 +1,8 @@
 #include "devicemodel.h"
 #include "windowframe.h"
 #include "../src/panel_lifecycle.h"
+#include "../src/product.h"
+#include "../src/settings.h"
 
 #include <QFont>
 #include <QGuiApplication>
@@ -21,13 +23,15 @@ bool EnsureBackground() {
         return true;
     }
     const QString directory = QCoreApplication::applicationDirPath();
-    return QProcess::startDetached(directory + QStringLiteral("/WirelessBattery.exe"), {}, directory);
+    return QProcess::startDetached(directory + u'/' + QString::fromWCharArray(product::BackgroundExe), {}, directory);
 }
 
 int RunPanel(int argc, char** argv) {
     QGuiApplication app(argc, argv);
-    app.setOrganizationName(QStringLiteral("WirelessBattery"));
-    app.setApplicationName(QStringLiteral("Wireless Battery"));
+    app.setOrganizationName(QStringLiteral("WirelessBatteryCenter"));
+    app.setApplicationName(QString::fromWCharArray(product::Name));
+    if (!ImportLegacySettings(HKEY_CURRENT_USER, product::LegacyPanelSettingsKey, product::PanelSettingsKey, true))
+        qWarning("Could not import Wireless Battery appearance settings.");
     const QIcon icon(QStringLiteral(":/branding/app.ico"));
     app.setWindowIcon(icon);
     QQuickStyle::setStyle(QStringLiteral("Basic"));

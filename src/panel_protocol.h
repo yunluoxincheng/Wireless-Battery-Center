@@ -13,7 +13,7 @@ inline constexpr size_t MaxResponse = 4 * 1024 * 1024;
 inline std::wstring PipePath() {
     DWORD session = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &session);
-    return L"\\\\.\\pipe\\WirelessBattery.Panel.v1." + std::to_wstring(session);
+    return L"\\\\.\\pipe\\WirelessBatteryCenter.Panel.v1." + std::to_wstring(session);
 }
 
 }

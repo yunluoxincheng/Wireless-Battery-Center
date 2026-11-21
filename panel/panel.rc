@@ -1,3 +1,7 @@
 // Upstream Wireless Battery icon by nik-txt (https://github.com/nik-txt).
 1 ICON "app.ico"
 2 ICON "app_light.ico"
+
+#define WBC_DESCRIPTION "Wireless Battery Center"
+#define WBC_FILENAME "WirelessBatteryCenterPanel.exe"
+#include "../res/version-info.rcinc"

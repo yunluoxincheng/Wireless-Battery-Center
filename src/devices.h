@@ -1,10 +1,13 @@
 #pragma once
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
 enum class DeviceKind { Other, Mouse, Headset, Keyboard, Gamepad, Phone };
 enum class WirelessLink : std::uint8_t { Unreported, Unknown, Linked, Unlinked };
+enum class BatteryCapability : std::uint8_t { Unknown, Readable, Unsupported, None };
+enum class Presence : std::uint8_t { Offline, Unknown, Online };
 
 // One battery-powered device, as seen during a single poll.
 struct DeviceStatus {
@@ -26,11 +29,15 @@ struct DeviceStatus {
     bool cached = false;       // the source reused a previous reading this poll
     WirelessLink wirelessLink = WirelessLink::Unreported; // separate receiver telemetry, when supported
     std::uint64_t readingTimeMs = 0; // source timestamp in Unix milliseconds, when supplied
+    std::wstring identity;     // verified Windows device instance or device-reported unit identity
+    BatteryCapability battery = BatteryCapability::Unknown;
+    bool panelOnly = false;    // discovery metadata, never a taskbar/tray battery entry
+    bool systemBatterySnapshot = false; // level published without a measurement timestamp
 };
 
 // Queries every supported device. Blocking (can take a second or two); call from a worker thread.
 #ifdef _WIN32
-std::vector<DeviceStatus> PollAllDevices(bool manualRefresh = false);
+std::vector<DeviceStatus> PollAllDevices(bool manualRefresh = false, std::set<std::wstring>* endpoints = nullptr);
 #else
 std::vector<DeviceStatus> PollAllDevices();
 #endif

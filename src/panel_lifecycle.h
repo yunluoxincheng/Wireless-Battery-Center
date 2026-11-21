@@ -4,10 +4,10 @@
 
 namespace panel {
 
-inline constexpr wchar_t BackgroundMutex[] = L"Local\\WirelessBatteryTray";
-inline constexpr wchar_t BackgroundWindowClass[] = L"WirelessBatteryWnd";
-inline constexpr wchar_t PanelMutex[] = L"Local\\WirelessBatteryPanel";
-inline constexpr wchar_t PanelWindowProperty[] = L"WirelessBattery.Panel.MainWindow";
+inline constexpr wchar_t BackgroundMutex[] = L"Local\\WirelessBatteryCenter.Background";
+inline constexpr wchar_t BackgroundWindowClass[] = L"WirelessBatteryCenterWnd";
+inline constexpr wchar_t PanelMutex[] = L"Local\\WirelessBatteryCenter.Panel";
+inline constexpr wchar_t PanelWindowProperty[] = L"WirelessBatteryCenter.Panel.MainWindow";
 
 inline BOOL CALLBACK FindPanelWindowCallback(HWND window, LPARAM data) {
     if (!GetPropW(window, PanelWindowProperty)) return TRUE;

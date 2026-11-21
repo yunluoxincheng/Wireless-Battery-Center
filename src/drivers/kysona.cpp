@@ -189,6 +189,7 @@ void DescribeMouse(DeviceStatus& s, const HidColl& c, const PollContext& ctx) {
     s.kind = KindFromCollections(ctx.colls, c.vid, c.pid);
     if (s.kind == DeviceKind::Other) s.kind = DeviceKind::Mouse;
     s.via = IsCable(c.vid, c.pid) ? L"USB cable" : L"2.4 GHz receiver";
+    s.identity = HidIdentity(c);
 }
 
 #ifdef _WIN32
@@ -304,7 +305,6 @@ void PollKysona(PollContext& ctx) {
     atkReader.activityUnambiguous = atkChannel != ctx.colls.end() &&
         std::find_if(std::next(atkChannel), ctx.colls.end(), IsAtkChannel) == ctx.colls.end();
 #endif
-    std::vector<std::wstring> seenNames;
     for (USHORT vendor : { (USHORT)0x3554, (USHORT)0x373B, (USHORT)0x3770, (USHORT)0x33E4, (USHORT)0x3710, (USHORT)0x35BB }) {
         for (auto [vid, pid] : ctx.Products(vendor)) {
 #ifdef _WIN32
@@ -318,7 +318,6 @@ void PollKysona(PollContext& ctx) {
                 atkReader.identity.wirelessLink = WirelessLink::Unknown;
                 atkReader.identity.protocol = "Kysona";
                 auto status = ReadAtkBattery(0);
-                if (status.wirelessLink == WirelessLink::Linked) seenNames.push_back(status.name);
                 ctx.Add(status, vid, pid);
                 continue;
             }
@@ -350,7 +349,10 @@ void PollKysona(PollContext& ctx) {
             if (trace) *trace << "scan vid=373B pid=101B unix_ms=" << UnixMs() << '\n';
             bool retriedBattery = false;
             const char* batteryResult = "no_response";
+            std::set<std::wstring> answeredEndpoints;
             for (const HidColl* c : colls) {
+                const auto endpoint = HidIdentity(*c);
+                if (answeredEndpoints.count(endpoint)) continue;
                 HidDev d;
                 if (trace) TraceCollection(*trace, *c);
                 if (!d.Open(*c)) {
@@ -372,6 +374,7 @@ void PollKysona(PollContext& ctx) {
                         if (trace) *trace << "link_byte=" << (int)r[6] << '\n';
                     } else {
                         s.connected = r[6] != 0;
+                        if (s.connected) s.wirelessLink = WirelessLink::Linked;
                     }
                 }
                 if (!answered || (s.connected && s.wirelessLink != WirelessLink::Unlinked)) {
@@ -389,30 +392,19 @@ void PollKysona(PollContext& ctx) {
                 }
                 // A failed battery request leaves the level unknown even when the receiver reports the mouse online.
                 if (!answered) continue;
+                answeredEndpoints.insert(endpoint);
                 if (!s.connected) {
                     ctx.Claim(vid, pid);
-                    break;
+                    continue;
                 }
                 DescribeMouse(s, *c, ctx);
                 if (atk8kReceiver) {
                     // Always publish this receiver's own key while it is enumerated, with no grace after removal.
-                    if (s.wirelessLink == WirelessLink::Linked || s.percent >= 0) seenNames.push_back(s.name);
                     ctx.Add(s, vid, pid);
                     break;
                 }
                 s.graceSec = 1800;
-                // A mouse plugged in for charging can show up twice (cable + dongle); keep one.
-                bool dup = false;
-                for (auto& n : seenNames) dup |= n == s.name;
-                if (dup) {
-                    ctx.Claim(vid, pid);
-                    for (auto& o : ctx.out)
-                        if (o.name == s.name && s.charging) o.charging = true;
-                } else {
-                    seenNames.push_back(s.name);
-                    ctx.Add(s, vid, pid);
-                }
-                break;
+                ctx.Add(s, vid, pid);
             }
             if (atk8kReceiver && !ctx.IsClaimed(vid, pid)) {
                 // Products() saw this VID/PID even if every protocol exchange (or open) failed.

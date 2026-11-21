@@ -12,6 +12,7 @@
 // (every poll on the cable), and allows an explicit refresh for VGN.
 #include "drivers.h"
 
+#include <algorithm>
 #include <map>
 
 namespace {
@@ -54,39 +55,32 @@ void PollAtkKeyboard(PollContext& ctx) {
         ULONGLONG lastAsk = 0;
         int lastPercent = -1;
         bool lastCharging = false;
-        std::wstring receiverPath;
     };
     static std::map<std::wstring, State> states;
-    // A cable suppresses its own ATK receiver, but VGN uses the same VID/PID.
     const bool receiverAlreadyClaimed = ctx.IsClaimed(kVid, kReceiver);
-    bool foundLegacy = false;
-    bool foundVgn = false;
-    for (USHORT pid : { kCable, kReceiver }) {  // the cable wins when both are connected
+    for (USHORT pid : { kCable, kReceiver }) {
         bool cable = pid == kCable;
         if (cable ? ctx.IsClaimed(kVid, pid) : receiverAlreadyClaimed) continue;
         const wchar_t* product = cable ? L"ATK V75X" : L"ATK V75X 2.4G Dongle";
+        std::set<std::wstring> seen;
         for (const HidColl* c : ctx.Find(kVid, pid, [](const HidColl& c) { return c.page() == 0xFF1C && c.usage() == 0x0092; })) {
             std::wstring name = HidProduct(*c);
             while (!name.empty() && name.back() == L' ') name.pop_back();
             bool generic = !cable && _wcsicmp(name.c_str(), L"Wireless Gaming Keyboard") == 0;
             // VGN V98Pro V2 shares the same protocol and VID/PID; verified on the 64-byte FF1C:0092 collection.
             bool vgn = !cable && _wcsicmp(name.c_str(), L"VGN V98pro V2 2.4G Dongle") == 0;
-            if (vgn ? foundVgn || c->inLen() != 64 || c->outLen() != 64 : foundLegacy) continue;
+            if (vgn && (c->inLen() != 64 || c->outLen() != 64)) continue;
             if (!generic && !vgn && _wcsicmp(name.c_str(), product) != 0) continue;
-            (vgn ? foundVgn : foundLegacy) = true;
+            if (!seen.insert(HidIdentity(*c)).second) continue;
             DeviceStatus s;
             s.key = vgn ? L"vgn_v98pro_v2:5088" : L"atk_keyboard:5088";
             s.name = vgn ? kVgnName : generic ? L"Wireless Gaming Keyboard" : L"ATK V75X";
-            auto& state = states[s.name];
+            auto& state = states[c->path];
             s.kind = DeviceKind::Keyboard;
             s.via = cable ? L"USB cable" : L"2.4 GHz receiver";
             // The VGN entry represents the physical receiver even when the keyboard does not answer.
             s.graceSec = vgn ? 0 : 1800;
             ULONGLONG now = GetTickCount64();
-            if (vgn && state.receiverPath != c->path) {
-                state = {};
-                state.receiverPath = c->path;
-            }
             const auto interval = vgn && ctx.manualRefresh ? kVgnManualIntervalMs : kReceiverIntervalMs;
             bool ask = cable || !state.lastAsk || now - state.lastAsk >= interval;
             int percent = -1;
@@ -111,12 +105,17 @@ void PollAtkKeyboard(PollContext& ctx) {
                 s.asleep = true;  // no reply: asleep, off or busy; keep the last value
             } else {
                 s.percent = ask ? percent : state.lastPercent;
+                s.cached = !ask && s.percent >= 0;
                 s.charging = ask ? charging : state.lastCharging;
                 if (s.percent < 0) s.asleep = true;
             }
-            ctx.Add(s, kVid, pid);
+            ctx.Add(s, *c);
             if (cable) ctx.Claim(kVid, kReceiver);
         }
     }
-    if (!foundVgn) states.erase(kVgnName);
+    for (auto it = states.begin(); it != states.end();) {
+        if (std::none_of(ctx.colls.begin(), ctx.colls.end(), [&](const HidColl& c) { return c.path == it->first; }))
+            it = states.erase(it);
+        else ++it;
+    }
 }

@@ -1,5 +1,6 @@
 // UI translations from plain text files. See i18n.h.
 #include "i18n.h"
+#include "product.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -12,7 +13,7 @@
 
 namespace {
 
-const wchar_t kSettingsKey[] = L"Software\\WirelessBattery";
+const auto& kSettingsKey = product::SettingsKey;
 
 // One language: its built-in text and/or a user's file (whose phrases win), parsed only when chosen.
 struct Source {
@@ -116,10 +117,10 @@ void LoadBuiltIn() {
     }
 }
 
-std::wstring UserFolder() {
+std::wstring UserFolder(const wchar_t* productFolder = L"WirelessBatteryCenter") {
     wchar_t path[MAX_PATH] = {};
     if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, path))) return L"";
-    return std::wstring(path) + L"\\WirelessBattery\\lang";
+    return std::wstring(path) + L"\\" + productFolder + L"\\lang";
 }
 
 void LoadFolder(const std::wstring& dir) {
@@ -195,6 +196,7 @@ void Init() {
     g_sources.clear();
     LoadBuiltIn();
     LoadFolder(ExeFolder() + L"\\lang");
+    LoadFolder(UserFolder(L"WirelessBattery"));
     LoadFolder(UserFolder());
     wchar_t buf[64] = {};
     DWORD size = sizeof(buf) - sizeof(wchar_t);

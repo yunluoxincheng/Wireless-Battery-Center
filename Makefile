@@ -1,4 +1,4 @@
-# Builds WirelessBattery.exe with MinGW-w64 (MSYS2 MINGW64/UCRT64 shell, or any mingw g++ on PATH).
+# Builds WirelessBatteryCenter.exe with MinGW-w64 (MSYS2 MINGW64/UCRT64 shell, or any mingw g++ on PATH).
 CXX      ?= g++
 WINDRES  ?= windres
 CXXFLAGS ?= -std=c++17 -Os -Wall -Wno-missing-field-initializers -ffunction-sections -fdata-sections \
@@ -9,7 +9,7 @@ LIBS     := -lhid -lsetupapi -lcfgmgr32 -lole32 -loleaut32 -lcomctl32 -lgdi32 -l
 SRC := $(wildcard src/*.cpp) $(wildcard src/drivers/*.cpp)
 OBJ := $(patsubst src/%.cpp,build/%.o,$(SRC)) build/app_res.o
 
-WirelessBattery.exe: $(OBJ)
+WirelessBatteryCenter.exe: $(OBJ)
 	$(CXX) $(LDFLAGS) $^ -o $@ $(LIBS)
 
 build/%.o: src/%.cpp $(wildcard src/*.h src/drivers/*.h)
@@ -21,12 +21,12 @@ build/languages.txt: $(wildcard lang/*.txt)
 	@mkdir -p build
 	@printf '' > $@; for f in $^; do printf '@file %s\n' "$$(basename $$f .txt)" >> $@; cat "$$f" >> $@; printf '\n' >> $@; done
 
-build/app_res.o: res/app.rc res/app.manifest res/app.ico res/app_light.ico build/languages.txt
+build/app_res.o: res/app.rc res/version-info.rcinc res/version.h res/app.manifest res/app.ico res/app_light.ico build/languages.txt
 	@mkdir -p build
 	$(WINDRES) -i $< -o $@ --include-dir res --include-dir build
 
 clean:
-	rm -rf build WirelessBattery.exe
+	rm -rf build WirelessBatteryCenter.exe
 
 test:
 	@mkdir -p build
@@ -70,5 +70,9 @@ test:
 	./build/labels_test.exe
 	$(CXX) $(CXXFLAGS) tests/brands_test.cpp src/brands.cpp -o build/brands_test.exe
 	./build/brands_test.exe
+	$(CXX) $(CXXFLAGS) tests/device_profiles_test.cpp src/device_profiles.cpp -o build/device_profiles_test.exe
+	./build/device_profiles_test.exe
+	$(CXX) $(CXXFLAGS) tests/settings_migration_test.cpp src/settings.cpp src/device_profiles.cpp -o build/settings_migration_test.exe
+	./build/settings_migration_test.exe
 
 .PHONY: clean test

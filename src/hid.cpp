@@ -6,6 +6,8 @@
 
 #include <setupapi.h>
 #include <hidclass.h>
+#include <initguid.h>
+#include <devpkey.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -26,7 +28,8 @@ std::vector<HidColl> EnumHid() {
         std::vector<BYTE> buf(need);
         auto det = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(buf.data());
         det->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-        if (!SetupDiGetDeviceInterfaceDetailW(di, &ifd, det, need, nullptr, nullptr)) continue;
+        SP_DEVINFO_DATA node{sizeof(node)};
+        if (!SetupDiGetDeviceInterfaceDetailW(di, &ifd, det, need, nullptr, &node)) continue;
         HANDLE h = CreateFileW(det->DevicePath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
         if (h == INVALID_HANDLE_VALUE) continue;
         HidColl c;
@@ -36,6 +39,16 @@ std::vector<HidColl> EnumHid() {
         PHIDP_PREPARSED_DATA pp;
         if (HidD_GetPreparsedData(h, &pp)) { HidP_GetCaps(pp, &c.caps); HidD_FreePreparsedData(pp); }
         CloseHandle(h);
+        GUID container{}, empty{};
+        DEVPROPTYPE type;
+        if (SetupDiGetDevicePropertyW(di, &node, &DEVPKEY_Device_ContainerId, &type,
+                                      reinterpret_cast<BYTE*>(&container), sizeof(container), nullptr, 0) &&
+            type == DEVPROP_TYPE_GUID && !IsEqualGUID(container, empty)) {
+            wchar_t id[40];
+            StringFromGUID2(container, id, 40);
+            if (_wcsicmp(id, L"{00000000-0000-0000-FFFF-FFFFFFFFFFFF}") != 0)
+                c.container = id;
+        }
         std::wstring lower = c.path;
         for (auto& ch : lower) ch = towlower(ch);
         size_t mi = lower.find(L"&mi_");

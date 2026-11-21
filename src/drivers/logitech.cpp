@@ -257,7 +257,8 @@ bool PollLogitechDevice(PollContext& ctx, USHORT pid, const std::vector<const Hi
     // A Bluetooth HID path (HOGP service 1812, classic HID 1124) is always a direct link. A sleepy
     // Bluetooth mouse can miss the 400 ms ping; probing it as a receiver then answers on every
     // index and lists the same mouse six times.
-    std::wstring path = (longs.empty() ? shorts[0] : longs[0])->path;
+    const auto& source = *(longs.empty() ? shorts[0] : longs[0]);
+    std::wstring path = source.path;
     for (auto& ch : path) ch = towlower(ch);
     bool bluetooth = path.find(L"{00001812-") != std::wstring::npos || path.find(L"{00001124-") != std::wstring::npos;
     const bool passthrough = IsPassthroughDongle(pid);
@@ -286,6 +287,7 @@ bool PollLogitechDevice(PollContext& ctx, USHORT pid, const std::vector<const Hi
             std::wstring unit = found ? ReadUnitId20(h, idx) : L"";
             if (!unit.empty()) {
                 s.key = L"logi:unit:" + unit;
+                s.identity = s.key;
                 // Unplugging the cable hands a receiver device back to its receiver; keep the
                 // entry for a minute so it does not blink out while the link comes back.
                 if (idx == 0xFF) s.graceSec = 60;
@@ -298,6 +300,8 @@ bool PollLogitechDevice(PollContext& ctx, USHORT pid, const std::vector<const Hi
             s.vid = 0x046D;
             s.pid = pid;
             if (s.kind == DeviceKind::Other) s.kind = GuessKind(s.name);
+            if (idx == 0xFF && s.identity.empty()) s.identity = HidIdentity(source);
+            if (bluetooth && !source.container.empty()) ctx.btContainers.insert(source.container);
             ctx.out.push_back(s);
             any = true;
         }

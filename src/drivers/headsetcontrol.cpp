@@ -1,5 +1,5 @@
 // Optional bridge to HeadsetControl (github.com/Sapd/HeadsetControl), which supports many more
-// headsets than the built-in drivers. If headsetcontrol.exe sits next to WirelessBattery.exe or is
+// headsets than the built-in drivers. If headsetcontrol.exe sits next to WirelessBatteryCenter.exe or is
 // on PATH, it is run with `-o json` and any headset not already handled here is added.
 #include "drivers.h"
 
