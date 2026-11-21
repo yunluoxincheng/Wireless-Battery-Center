@@ -27,8 +27,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/compare/$PR_BASE...$PR_HEAD" > "$RUNNER_TEMP/pr.diff"
+        run: |
+          gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/compare/$PR_BASE...$PR_HEAD" > "$RUNNER_TEMP/pr.diff"
       - name: Scan for red flags
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
