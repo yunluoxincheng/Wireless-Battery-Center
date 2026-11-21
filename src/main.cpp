@@ -6,16 +6,24 @@
 #include <hidclass.h>
 
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cstdio>
+#include <cwctype>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "devices.h"
+#include "device_profiles.h"
 #include "i18n.h"
 #include "labels.h"
+#include "atk8k.h"
+#include "panel_ipc.h"
+#include "panel_lifecycle.h"
+#include "product.h"
+#include "settings.h"
 #include "report.h"
 #include "widget.h"
 
@@ -24,51 +32,108 @@ namespace {
 constexpr UINT WM_TRAY = WM_APP + 1;
 constexpr UINT WM_RESULTS = WM_APP + 2;
 constexpr UINT WM_WIDGET_CLICK = WM_APP + 3;
-constexpr UINT_PTR TIMER_DEBOUNCE = 1;
+constexpr UINT WM_PANEL_PIPE = WM_APP + 4;
+constexpr UINT WM_ATK_RESULT = WM_APP + 5;
+constexpr UINT_PTR TIMER_RESUME_REFRESH = 1;
 constexpr UINT_PTR TIMER_WIDGET = 2;
+constexpr UINT_PTR TIMER_DEVICE_SETTLE = 3;
+constexpr UINT_PTR TIMER_ATK_WAKE = 4;
+constexpr UINT_PTR TIMER_ATK_LISTEN = 5;
+constexpr UINT DEVICE_SETTLE_MS = 2500;
 constexpr DWORD POLL_INTERVAL_MS = 60 * 1000;
-constexpr int LOW_BATTERY = 15;
+constexpr UINT ATK_WAKE_DELAY_MS = 50;
+constexpr UINT ATK_LISTEN_MS = 30 * 1000;
+constexpr UINT ATK_RETRY_COOLDOWN_MS = 30 * 1000;
+constexpr std::uint64_t READING_FRESH_MS = 180 * 1000;
+constexpr ULONGLONG PROFILE_SAVE_INTERVAL_MS = 5 * 60 * 1000;
+constexpr int DEFAULT_LOW_BATTERY = 15;
 constexpr UINT PLACEHOLDER_ID = 1;
 
 enum MenuId : UINT {
-    ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_LAST_KNOWN, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_SUPPORT, ID_REPORT,
-    ID_BRAND_COLORS, ID_STACKED,
+    ID_REFRESH = 100, ID_AUTOSTART, ID_HIDE_EXPIRED_OR_ASLEEP, ID_WIDGET_BACKGROUND, ID_EXIT, ID_MODE_WIDGET, ID_MODE_TRAY, ID_REPORT,
+    ID_BRAND_COLORS, ID_STACKED, ID_PANEL,
     ID_LANG_AUTO = 400, ID_LANG_ADD, ID_LANG_FIRST,  // "Language": ID_LANG_FIRST + 0..63
     ID_MONITOR_ALL = 300, ID_MONITOR_MAIN, ID_MONITOR_FIRST,  // "Show the widget on": ID_MONITOR_FIRST + 0..31
     ID_DEVICE_FIRST = 1000
 };
 enum DeviceCmd : UINT { DEV_TOGGLE, DEV_LEFT, DEV_RIGHT, DEV_STRIDE = 4 };
 
-const wchar_t* kAppName = L"Wireless Battery";
+const wchar_t* kAppName = product::Name;
 const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const wchar_t* kRunValue = L"WirelessBattery";
-
-const wchar_t* kSettingsKey = L"Software\\WirelessBattery";
+const wchar_t* kRunValue = product::RunValue;
+const wchar_t* kSettingsKey = product::SettingsKey;
 
 HINSTANCE g_inst;
 HWND g_hwnd;
-HANDLE g_refreshEvt, g_stopEvt, g_worker;
+HANDLE g_refreshEvt, g_stopEvt, g_atkWakeEvt, g_worker;
 UINT g_taskbarCreatedMsg;
 bool g_lightTaskbar;
 bool g_wantWidget = true;      // user's choice: taskbar widget (default) or tray icons
 bool g_useWidget = false;      // what is actually shown right now
-bool g_hideLastKnown = false;  // hide (last known) / asleep devices from taskbar and tray
+bool g_hideExpiredOrAsleep = false;
 std::wstring g_widgetMonitor = L"all";  // which taskbars show the widget: "all", "main" or one monitor id
 bool g_widgetBackground = false;  // draw a plate behind the taskbar text (transparent taskbar themes)
 bool g_stacked = false;      // icon above the percentage (menu option)
 bool g_brandColors = false;  // off by default; known brands get their color (Razer green, Logitech blue, ...)
+bool g_demo = false;
+bool g_deviceSettling = false;
+int g_lowBattery = DEFAULT_LOW_BATTERY;
+bool g_lowBatteryNotifications = true;
+std::uint64_t g_pollRevision = 0;
+std::atomic<std::uint64_t> g_requestedRefresh{0};
+std::uint64_t g_completedRefresh = 0;
+
+struct PollResult {
+    std::uint64_t refresh;
+    std::uint64_t atkEpoch;
+    std::vector<DeviceStatus> devices;
+    std::set<std::wstring> endpoints;
+    bool atkActivityAvailable = false;
+};
+
+struct AtkResult {
+    ULONGLONG activityTick;
+    std::uint64_t epoch;
+    std::optional<DeviceStatus> reading;
+};
+
+// The window owns Raw Input registration and timers. The worker owns the HID connection.
+atk8k::ActivityWatch g_atkWatch;
+std::atomic<ULONGLONG> g_atkWakeRequest{0};
+std::atomic<std::uint64_t> g_atkEpoch{0};
+std::atomic<bool> g_atkReceiverRemoved{false};
+ULONGLONG g_atkActivityTick = 0;
+ULONGLONG g_atkCooldownUntil = 0;
+bool g_atkAwaitingPoll = true;
+bool g_atkListenedThisPoll = false;
+bool g_atkSuspended = false;
+std::wstring g_atkEntryKey;
 
 struct TrayEntry {
     UINT uid = 0;
     DeviceStatus st;
+    DeviceProfile profile;
+    Presence presence = Presence::Offline;
+    Accent brandAccent = Accent::None;
+    ULONGLONG profileSaved = 0;
+    bool profileDirty = false;
+    bool profileWriteFailed = false;
+    bool profileLive = false;
     int lastPct = -1;        // last known percentage, kept while the device sleeps
+    std::wstring lastLevel;
     ULONGLONG lastSeen = 0;
+    std::uint64_t lastReadingMs = 0;
+    bool readingExpired = false;
+    bool present = false;    // the original surfaces only display the current poll and its grace period
     bool added = false;
     bool lowWarned = false;
     std::wstring iconSig;    // what the current icon shows, to avoid needless redraws
     HICON icon = nullptr;
 };
 std::map<std::wstring, TrayEntry> g_entries;
+std::optional<ProfileStore> g_profiles;
+bool g_profileLoadIssues = false;
+std::wstring g_pendingRemoval;
 bool g_placeholder = false;
 HICON g_placeholderIcon = nullptr;
 
@@ -104,53 +169,101 @@ std::wstring ExePath() {
     return p;
 }
 
-// Devices the user chose to hide (by key), stored as a REG_MULTI_SZ.
+// Per-device choices are keyed by the identity supplied by the existing drivers.
 std::set<std::wstring> g_hidden;
-
-void LoadHidden() {
-    DWORD size = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"HiddenDevices", RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS || !size)
-        return;
-    std::vector<wchar_t> buf(size / sizeof(wchar_t) + 1, 0);
-    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"HiddenDevices", RRF_RT_REG_MULTI_SZ, nullptr, buf.data(), &size) != ERROR_SUCCESS)
-        return;
-    for (const wchar_t* p = buf.data(); *p; p += wcslen(p) + 1) g_hidden.insert(p);
-}
-
-void SaveHidden() {
-    std::wstring multi;
-    for (const auto& k : g_hidden) { multi += k; multi.push_back(L'\0'); }
-    multi.push_back(L'\0');
-    RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"HiddenDevices", REG_MULTI_SZ, multi.data(), (DWORD)(multi.size() * sizeof(wchar_t)));
-}
-
-bool IsHidden(const std::wstring& key) { return g_hidden.count(key) != 0; }
-
-// The user's left-to-right order (device keys), stored as a REG_MULTI_SZ. Devices not in it follow
-// in the default order (by type, then name).
+std::set<std::wstring> g_panelHidden;
+std::map<std::wstring, std::wstring> g_aliases;
 std::vector<std::wstring> g_order;
+// The old preference key is retained only by the verified instance that adopted it.
+std::map<std::wstring, std::wstring> g_preferences;
 
-void LoadOrder() {
-    DWORD size = 0;
-    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"DeviceOrder", RRF_RT_REG_MULTI_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS || !size)
-        return;
-    std::vector<wchar_t> buf(size / sizeof(wchar_t) + 1, 0);
-    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"DeviceOrder", RRF_RT_REG_MULTI_SZ, nullptr, buf.data(), &size) != ERROR_SUCCESS)
-        return;
-    for (const wchar_t* p = buf.data(); *p; p += wcslen(p) + 1) g_order.push_back(p);
+std::vector<std::wstring> ReadMultiSetting(const wchar_t* name) {
+    std::vector<std::wstring> values;
+    if (!::ReadMultiSetting(HKEY_CURRENT_USER, kSettingsKey, name, values)) g_profileLoadIssues = true;
+    return values;
 }
 
-void SaveOrder() {
-    if (g_order.size() > 64) g_order.resize(64);  // forget long-gone devices
-    std::wstring multi;
-    for (const auto& k : g_order) { multi += k; multi.push_back(L'\0'); }
-    multi.push_back(L'\0');
-    RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"DeviceOrder", REG_MULTI_SZ, multi.data(), (DWORD)(multi.size() * sizeof(wchar_t)));
+template<class Strings>
+bool WriteMultiSetting(const wchar_t* name, const Strings& values) {
+    return ::WriteMultiSetting(HKEY_CURRENT_USER, kSettingsKey, name, {values.begin(), values.end()});
 }
+
+const std::wstring& PreferenceKey(const std::wstring& identity) {
+    const auto found = g_preferences.find(identity);
+    return found == g_preferences.end() ? identity : found->second;
+}
+
+bool LegacyPreferenceBound(const std::wstring& legacy) {
+    return std::any_of(g_preferences.begin(), g_preferences.end(), [&](const auto& pair) { return pair.second == legacy; });
+}
+
+bool IsHidden(const std::wstring& key) { return g_hidden.count(PreferenceKey(key)) != 0; }
+
+void BindLegacyPreference(const std::wstring& identity, const std::wstring& legacy) {
+    if (identity == legacy || g_preferences.count(identity)) return;
+    if (!g_aliases.count(legacy) && !g_hidden.count(legacy) && !g_panelHidden.count(legacy) &&
+        std::find(g_order.begin(), g_order.end(), legacy) == g_order.end()) return;
+    if (LegacyPreferenceBound(legacy)) return;
+    auto updated = g_preferences;
+    updated.emplace(identity, legacy);
+    std::vector<std::wstring> values;
+    for (const auto& [key, preference] : updated) {
+        values.push_back(key);
+        values.push_back(preference);
+    }
+    if (WriteMultiSetting(L"PanelLegacyIdentities", values)) g_preferences.swap(updated);
+    else g_profileLoadIssues = true;
+}
+
+void LoadDevicePreferences() {
+    auto hidden = ReadMultiSetting(L"HiddenDevices");
+    g_hidden.clear();
+    g_hidden.insert(hidden.begin(), hidden.end());
+    auto panelHidden = ReadMultiSetting(L"PanelHiddenDevices");
+    g_panelHidden.clear();
+    g_panelHidden.insert(panelHidden.begin(), panelHidden.end());
+    g_order = ReadMultiSetting(L"DeviceOrder");
+    auto aliases = ReadMultiSetting(L"DeviceAliases");
+    g_aliases.clear();
+    for (size_t i = 1; i < aliases.size(); i += 2) g_aliases[aliases[i - 1]] = aliases[i];
+    auto bindings = ReadMultiSetting(L"PanelLegacyIdentities");
+    g_preferences.clear();
+    for (size_t i = 1; i < bindings.size(); i += 2) g_preferences.emplace(bindings[i - 1], bindings[i]);
+}
+
+void LoadDeviceSettings() {
+    LoadDevicePreferences();
+    DWORD threshold = DEFAULT_LOW_BATTERY, size = sizeof(threshold);
+    if (RegGetValueW(HKEY_CURRENT_USER, kSettingsKey, L"LowBatteryPercent", RRF_RT_REG_DWORD, nullptr, &threshold, &size)
+        == ERROR_SUCCESS && threshold >= 1 && threshold <= 100)
+        g_lowBattery = static_cast<int>(threshold);
+}
+
+const std::wstring& DisplayName(const DeviceStatus& s) {
+    const auto it = g_aliases.find(PreferenceKey(s.key));
+    return it == g_aliases.end() ? s.name : it->second;
+}
+
+int ReadingPercent(const TrayEntry& e) { return e.st.percent >= 0 ? e.st.percent : e.lastPct; }
+
+const std::wstring& ReadingLevel(const TrayEntry& e) { return e.st.percent >= 0 ? e.st.levelText : e.lastLevel; }
+
+bool IsReadingCached(const TrayEntry& e) {
+    const auto& s = e.st;
+    return ReadingPercent(e) >= 0 && (!s.connected || s.asleep || s.cached || s.percent < 0);
+}
+
+bool IsCharging(const TrayEntry& e) {
+    return e.st.connected && !e.st.asleep && !e.st.cached && e.st.charging;
+}
+
+bool IsReadingDimmed(const TrayEntry& e) { return e.st.asleep || e.readingExpired || ReadingPercent(e) < 0; }
 
 bool IsEntryHidden(const TrayEntry& e) {
-    return IsHidden(e.st.key) || (g_hideLastKnown && (e.st.asleep || (e.st.percent < 0 && e.lastPct >= 0)));
+    return IsHidden(e.st.key) || (g_hideExpiredOrAsleep && (e.st.asleep || e.readingExpired));
 }
+
+bool IsShown(const TrayEntry& e) { return e.present && !e.st.panelOnly && e.st.connected && !IsEntryHidden(e); }
 
 bool LoadBoolSetting(const wchar_t* name, bool defaultVal) {
     DWORD v = defaultVal ? 1 : 0, sz = sizeof(v);
@@ -158,15 +271,14 @@ bool LoadBoolSetting(const wchar_t* name, bool defaultVal) {
     return v != 0;
 }
 
-void SaveBoolSetting(const wchar_t* name, bool on) {
+bool SaveBoolSetting(const wchar_t* name, bool on) {
     DWORD v = on ? 1 : 0;
-    RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, name, REG_DWORD, &v, sizeof(v));
+    return RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, name, REG_DWORD, &v, sizeof(v)) == ERROR_SUCCESS;
 }
 
 bool LoadWidgetMode() { return LoadBoolSetting(L"TaskbarWidget", true); }
-void SaveWidgetMode(bool on) { SaveBoolSetting(L"TaskbarWidget", on); }
-bool LoadHideLastKnown() { return LoadBoolSetting(L"HideLastKnownDevices", false); }
-void SaveHideLastKnown(bool on) { SaveBoolSetting(L"HideLastKnownDevices", on); }
+bool LoadHideExpiredOrAsleep() { return LoadBoolSetting(L"HideLastKnownDevices", false); }
+void SaveHideExpiredOrAsleep(bool on) { SaveBoolSetting(L"HideLastKnownDevices", on); }
 bool LoadWidgetBackground() { return LoadBoolSetting(L"WidgetBackground", false); }
 void SaveWidgetBackground(bool on) { SaveBoolSetting(L"WidgetBackground", on); }
 std::wstring LoadWidgetMonitor() {
@@ -308,17 +420,18 @@ HICON RenderIcon(const std::wstring& text, int barPct, Rgb textColor, Rgb barCol
 
 Rgb Foreground() { return g_lightTaskbar ? Rgb{ 0, 0, 0 } : Rgb{ 255, 255, 255 }; }
 
-Accent AccentFor(const DeviceStatus& s) { return g_brandColors ? BrandOf(s) : Accent::None; }
+Accent AccentFor(const TrayEntry& e) { return g_brandColors ? e.brandAccent : Accent::None; }
 
 HICON IconFor(int pct, bool charging, bool dim, Accent accent) {
     Rgb fg = Foreground();
     BrandColor bc = AccentColor(accent, g_lightTaskbar);
-    Rgb bar = charging        ? Rgb{ 0, 170, 255 }
-            : pct <= LOW_BATTERY ? Rgb{ 232, 32, 48 }
+    Rgb bar = dim             ? fg
+            : charging        ? Rgb{ 0, 170, 255 }
+            : pct <= g_lowBattery ? Rgb{ 232, 32, 48 }
             : pct <= 30       ? Rgb{ 255, 150, 0 }
             : accent != Accent::None ? Rgb{ bc.r, bc.g, bc.b }
                               : Rgb{ 30, 190, 90 };
-    Rgb text = (!charging && pct >= 0 && pct <= LOW_BATTERY) ? Rgb{ 240, 50, 60 } : fg;
+    Rgb text = (!dim && !charging && pct >= 0 && pct <= g_lowBattery) ? Rgb{ 240, 50, 60 } : fg;
     std::wstring t = pct < 0 ? L"?" : std::to_wstring(pct);
     return RenderIcon(t, pct, text, bar, dim);
 }
@@ -334,13 +447,18 @@ std::wstring StatusText(const TrayEntry& e) {
     const auto& s = e.st;
     if (!s.connected) return T(L"off / not connected");
     std::wstring t;
-    if (!s.levelText.empty() && s.percent >= 0) t = T(s.levelText);
-    else if (s.percent >= 0) t = std::to_wstring(s.percent) + L"%";
-    else if (e.lastPct >= 0) t = TF(L"{percent}% (last known)", { { L"percent", std::to_wstring(e.lastPct) } });
+    const int percent = ReadingPercent(e);
+    const auto& level = ReadingLevel(e);
+    if (percent >= 0 && !level.empty()) t = T(level);
+    else if (percent >= 0) t = std::to_wstring(percent) + L"%";
     else t = T(L"unknown");
     if (!s.detail.empty() && s.percent >= 0) t += L" (" + s.detail + L")";
-    if (s.charging) t += std::wstring(L", ") + T(L"charging");
+    if (IsCharging(e)) t += std::wstring(L", ") + T(L"charging");
     if (s.asleep) t += std::wstring(L", ") + T(L"asleep");
+    if (s.wirelessLink == WirelessLink::Unlinked || s.wirelessLink == WirelessLink::Unknown)
+        t += std::wstring(L", ") + T(L"link unconfirmed");
+    if (IsReadingCached(e) || e.readingExpired) t += std::wstring(L", ") + T(L"last known");
+    if (e.readingExpired) t += std::wstring(L", ") + T(L"reading expired");
     return t;
 }
 
@@ -382,7 +500,7 @@ void UpdatePlaceholder() {
     for (auto& [k, e] : g_entries) any |= e.added;
     if (!any && !g_placeholder) {
         if (!g_placeholderIcon) g_placeholderIcon = RenderIcon(L"-", -1, Foreground(), Foreground(), true);
-        TrayCall(NIM_ADD, PLACEHOLDER_ID, g_placeholderIcon, std::wstring(L"Wireless Battery\n") + T(L"No devices with battery info found"));
+        TrayCall(NIM_ADD, PLACEHOLDER_ID, g_placeholderIcon, std::wstring(kAppName) + L"\n" + T(L"No devices with battery info found"));
         g_placeholder = true;
     } else if (any && g_placeholder) {
         TrayDelete(PLACEHOLDER_ID);
@@ -392,30 +510,32 @@ void UpdatePlaceholder() {
 
 void ApplyEntry(TrayEntry& e) {
     const auto& s = e.st;
-    bool visible = s.connected && !g_useWidget && !IsEntryHidden(e);
+    const bool visible = !g_useWidget && IsShown(e);
     if (!visible) {
         if (e.added) { TrayDelete(e.uid); e.added = false; }
         return;
     }
-    int shown = s.percent >= 0 ? s.percent : e.lastPct;
-    bool dim = s.percent < 0;
-    Accent accent = AccentFor(s);
-    std::wstring sig = std::to_wstring(shown) + (s.charging ? L"c" : L"") + (dim ? L"d" : L"") + (g_lightTaskbar ? L"l" : L"k") +
+    const int shown = ReadingPercent(e);
+    const bool dim = IsReadingDimmed(e);
+    const bool charging = IsCharging(e);
+    Accent accent = AccentFor(e);
+    std::wstring sig = std::to_wstring(shown) + (charging ? L"c" : L"") + (dim ? L"d" : L"") + (g_lightTaskbar ? L"l" : L"k") +
                        L"a" + std::to_wstring((int)accent);
     if (sig != e.iconSig || !e.icon) {
         if (e.icon) DestroyIcon(e.icon);
-        e.icon = IconFor(shown, s.charging, dim, accent);
+        e.icon = IconFor(shown, charging, dim, accent);
         e.iconSig = sig;
     }
-    std::wstring tip = s.name + L"\n" + StatusText(e);
+    std::wstring tip = DisplayName(s) + L"\n" + StatusText(e);
 
     const wchar_t* infoTitle = nullptr;
     std::wstring info;
-    if (s.charging || shown > LOW_BATTERY + 10) e.lowWarned = false;
-    if (!s.charging && s.percent >= 0 && s.percent <= LOW_BATTERY && !e.lowWarned) {
+    const bool live = !dim && !IsReadingCached(e);
+    if (charging || (live && shown > g_lowBattery + 10)) e.lowWarned = false;
+    if (g_lowBatteryNotifications && live && !charging && shown <= g_lowBattery && !e.lowWarned) {
         e.lowWarned = true;
         infoTitle = T(L"Low battery");
-        info = TF(L"{name} is at {percent}%", { { L"name", s.name }, { L"percent", std::to_wstring(s.percent) } });
+        info = TF(L"{name} is at {percent}%", { { L"name", DisplayName(s) }, { L"percent", std::to_wstring(shown) } });
     }
     TrayCall(e.added ? NIM_MODIFY : NIM_ADD, e.uid, e.icon, tip, infoTitle, info);
     e.added = true;
@@ -432,17 +552,15 @@ int KindOrder(DeviceKind k) {  // default order: headset first, then mouse, ...
     }
 }
 
-bool IsShown(const TrayEntry& e) { return e.st.connected && !IsEntryHidden(e); }
-
 // Entries in left-to-right order: the user's order first, then the rest by type and name. Works the
 // same for every kind of device (receivers, Bluetooth, controllers, HeadsetControl) as it only uses
 // the device key.
-std::vector<TrayEntry*> OrderedEntries(bool shownOnly) {
+std::vector<TrayEntry*> OrderedEntries(bool shownOnly, bool includeOffline = false) {
     std::vector<TrayEntry*> list;
     for (auto& [k, e] : g_entries)
-        if (!shownOnly || IsShown(e)) list.push_back(&e);
+        if (shownOnly ? IsShown(e) : (includeOffline || (e.present && !e.st.panelOnly))) list.push_back(&e);
     auto rank = [](const TrayEntry* e) {
-        auto it = std::find(g_order.begin(), g_order.end(), e->st.key);
+        auto it = std::find(g_order.begin(), g_order.end(), PreferenceKey(e->st.key));
         return it == g_order.end() ? INT_MAX : (int)(it - g_order.begin());
     };
     std::stable_sort(list.begin(), list.end(), [&](const TrayEntry* a, const TrayEntry* b) {
@@ -460,58 +578,240 @@ void UpdateWidget() {
     std::vector<TrayEntry*> list = OrderedEntries(true);
     // Two devices of one kind share an icon: give each a tiny caption so they can be told apart.
     std::vector<LabelInput> labelIn;
-    for (auto* e : list) labelIn.push_back({ e->st.kind, e->st.name });
+    for (auto* e : list) labelIn.push_back({ e->st.kind, DisplayName(e->st) });
     std::vector<std::wstring> labels = ShortLabels(labelIn, 3);
     std::vector<WidgetItem> items;
     std::wstring tip;
     for (auto* e : list) {
         WidgetItem it;
         it.kind = e->st.kind;
-        it.percent = e->st.percent >= 0 ? e->st.percent : e->lastPct;
-        if (e->st.percent >= 0) it.text = T(e->st.levelText);
-        it.charging = e->st.charging;
-        it.dim = e->st.percent < 0;
-        it.low = !it.charging && it.percent >= 0 && it.percent <= LOW_BATTERY;
+        it.percent = ReadingPercent(*e);
+        it.text = T(ReadingLevel(*e));
+        it.charging = !e->readingExpired && IsCharging(*e);
+        it.dim = IsReadingDimmed(*e);
+        it.low = !it.dim && !it.charging && it.percent <= g_lowBattery;
         it.bluetooth = e->st.via == L"Bluetooth";
         it.label = labels[items.size()];
-        it.accent = AccentFor(e->st);
+        it.accent = it.dim ? Accent::None : AccentFor(*e);
         items.push_back(it);
         if (!tip.empty()) tip += L"\n";
-        tip += e->st.name + L": " + StatusText(*e);
+        tip += DisplayName(e->st) + L": " + StatusText(*e);
     }
-    if (tip.empty()) tip = std::wstring(L"Wireless Battery: ") + T(L"No devices with battery info found");
+    if (tip.empty()) tip = std::wstring(kAppName) + L": " + T(L"No devices with battery info found");
     widget::SetItems(items, tip);
 }
 
-void OnResults(std::vector<DeviceStatus>& results) {
-    std::map<std::wstring, bool> seen;
-    for (auto& s : results) {
-        auto& e = g_entries[s.key];
-        if (!e.uid) e.uid = StableId(s.key);
-        e.st = s;
-        if (s.percent >= 0) e.lastPct = s.percent;
-        e.lastSeen = GetTickCount64();
-        seen[s.key] = true;
-        ApplyEntry(e);
+std::uint64_t UnixTimeMs() {
+    FILETIME fileTime{};
+    GetSystemTimeAsFileTime(&fileTime);
+    ULARGE_INTEGER now{};
+    now.LowPart = fileTime.dwLowDateTime;
+    now.HighPart = fileTime.dwHighDateTime;
+    constexpr ULONGLONG unixEpoch = 116444736000000000ull;
+    return (now.QuadPart - unixEpoch) / 10000;
+}
+
+bool UpdateReadingExpiry(TrayEntry& e, std::uint64_t nowMs) {
+    const bool expired = e.lastReadingMs && ReadingPercent(e) >= 0 && nowMs > e.lastReadingMs
+                      && nowMs - e.lastReadingMs > READING_FRESH_MS;
+    const bool changed = e.readingExpired != expired;
+    e.readingExpired = expired;
+    return changed;
+}
+
+void RefreshReadingExpiry() {
+    // The existing UI timer advances freshness even when the hardware scan is still pending.
+    const auto nowMs = UnixTimeMs();
+    bool changed = false;
+    for (auto& [key, e] : g_entries) {
+        if (UpdateReadingExpiry(e, nowMs)) {
+            ApplyEntry(e);
+            changed = true;
+        }
     }
-    for (auto it = g_entries.begin(); it != g_entries.end();) {
-        auto& e = it->second;
-        // Some receivers drop sleeping devices from the link; keep showing the last value for a while.
-        bool inGrace = !seen.count(it->first) && e.st.graceSec > 0 && e.st.connected &&
-                       GetTickCount64() - e.lastSeen < (ULONGLONG)e.st.graceSec * 1000;
+    if (changed) {
+        UpdatePlaceholder();
+        UpdateWidget();
+    }
+}
+
+void UpdateEntry(TrayEntry& e, const DeviceStatus& s, ULONGLONG tick, std::uint64_t nowMs) {
+    e.present = true;
+    e.st = s;
+    if (s.percent >= 0) {
+        e.lastPct = s.percent;
+        e.lastLevel = s.levelText;
+        if (s.readingTimeMs) {
+            // A BLE advertisement or system snapshot may be returned by several polls.
+            if (e.lastReadingMs && s.readingTimeMs <= e.lastReadingMs + 32) e.st.cached = true;
+            else e.lastReadingMs = s.readingTimeMs;
+        }
+        else if (s.connected && !s.asleep && !s.cached) e.lastReadingMs = nowMs;
+    }
+    e.lastSeen = tick;
+    UpdateReadingExpiry(e, nowMs);
+    ApplyEntry(e);
+}
+
+std::wstring Utf16(std::string_view value);
+
+void SaveProfile(TrayEntry& e, ULONGLONG tick, bool immediate) {
+    if (!e.profileDirty || (!immediate && tick - e.profileSaved < PROFILE_SAVE_INTERVAL_MS)) return;
+    e.profileSaved = tick;
+    e.profileWriteFailed = !g_profiles->Save(e.st.key, e.profile);
+    e.profileDirty = e.profileWriteFailed;
+}
+
+void ObserveEntry(TrayEntry& e, DeviceStatus s, const std::wstring& key, ULONGLONG tick, std::uint64_t now) {
+    e.brandAccent = BrandOf(s);
+    std::wstring brand;
+    if (e.brandAccent != Accent::None) brand = StyleOf(e.brandAccent).name;
+    else if (s.name == L"VGN V98Pro V2") brand = L"VGN";
+    else if (s.vid == 0x373B || s.name == L"ATK V75X") brand = L"ATK";
+    else if (s.vid == 0x35BB) brand = L"HECATE";
+    else if (s.vid == 0x413C) brand = L"Dell";
+    s.key = key;
+    UpdateEntry(e, s, tick, now);
+    const auto previousPresence = e.presence;
+    const auto online = e.profile.lastOnline;
+    const auto reading = e.profile.readingTime;
+    e.presence = ObservedPresence(e.st);
+    const bool changed = ObserveProfile(e.profile, e.st, e.presence, brand,
+                                        s.protocol ? Utf16(s.protocol) : L"", now);
+    const bool newReading = e.profile.readingTime != reading;
+    e.profileLive = newReading && !s.systemBatterySnapshot;
+    if (s.identity.empty()) return;
+    e.profileDirty |= changed || e.profile.lastOnline != online || newReading;
+    SaveProfile(e, tick, changed || previousPresence != e.presence);
+}
+
+void LoadProfiles() {
+    g_profiles.emplace(kSettingsKey);
+    for (auto& [key, profile] : g_profiles->Load(g_profileLoadIssues)) {
+        auto& e = g_entries[key];
+        e.uid = StableId(key);
+        e.st.key = e.st.identity = key;
+        e.st.name = profile.name;
+        e.st.via = profile.via;
+        e.st.kind = profile.kind;
+        e.st.vid = profile.vid;
+        e.st.pid = profile.pid;
+        e.st.connected = false;
+        e.st.panelOnly = profile.panelOnly;
+        e.profile = std::move(profile);
+    }
+}
+
+void OnResults(const std::vector<DeviceStatus>& results, const std::set<std::wstring>& endpoints) {
+    const ULONGLONG tick = GetTickCount64();
+    const auto nowMs = UnixTimeMs();
+    std::map<std::wstring, size_t> counts;
+    for (const auto& s : results) ++counts[s.key];
+    std::set<std::wstring> seen;
+    g_atkEntryKey.clear();
+    for (const auto& s : results) {
+        std::wstring key = s.identity.empty() ? s.key : s.identity;
+        if (s.identity.empty() && LegacyPreferenceBound(key)) key = L"session:" + key;
+        if (key == g_pendingRemoval) continue;
+        if (s.identity.empty() && (g_entries.count(key) && !g_entries.at(key).st.identity.empty())) continue;
+        if (!seen.insert(key).second) continue;
+        if (ObservedPresence(s) == Presence::Offline && !g_entries.count(key)) continue;
+        if (!s.identity.empty() && counts[s.key] == 1 && ObservedPresence(s) == Presence::Online)
+            BindLegacyPreference(key, s.key);
+        const auto [entry, inserted] = g_entries.try_emplace(key);
+        auto& e = entry->second;
+        if (inserted) e.uid = StableId(key);
+        ObserveEntry(e, s, key, tick, nowMs);
+        if (s.key == atk8k::DeviceKey) g_atkEntryKey = key;
+    }
+    for (auto& [key, e] : g_entries) {
+        if (seen.count(key)) continue;
+        e.profileLive = false;
+        const auto previousPresence = e.presence;
+        e.presence = endpoints.count(key) ? Presence::Unknown : Presence::Offline;
+        SaveProfile(e, tick, previousPresence != e.presence);
+        if (!e.present) continue;
+        UpdateReadingExpiry(e, nowMs);
+        // A missed reading can also happen during hotplug or a timeout. Keep the cached level without inferring sleep.
+        const bool inGrace = e.st.graceSec > 0 && e.st.connected &&
+                             tick - e.lastSeen < (ULONGLONG)e.st.graceSec * 1000;
         if (inGrace) {
             e.st.percent = -1;
-            e.st.asleep = true;
+            e.st.charging = false;
             ApplyEntry(e);
-        }
-        if (!seen.count(it->first) && !inGrace) {
-            if (it->second.added) TrayDelete(it->second.uid);
-            if (it->second.icon) DestroyIcon(it->second.icon);
-            it = g_entries.erase(it);
         } else {
-            ++it;
+            e.present = false;
+            e.st.connected = false;
+            e.st.percent = -1;
+            ApplyEntry(e);
+            if (e.icon) DestroyIcon(e.icon);
+            e.icon = nullptr;
+            e.lowWarned = false;
         }
     }
+    for (auto it = g_entries.begin(); it != g_entries.end();) {
+        if (!it->second.present && it->second.st.identity.empty()) it = g_entries.erase(it);
+        else ++it;
+    }
+    ++g_pollRevision;
+    UpdatePlaceholder();
+    UpdateWidget();
+}
+
+void StopAtkListener() {
+    KillTimer(g_hwnd, TIMER_ATK_LISTEN);
+    g_atkWatch.Stop(g_hwnd);
+}
+
+void CancelAtkActivity() {
+    StopAtkListener();
+    KillTimer(g_hwnd, TIMER_ATK_WAKE);
+    g_atkActivityTick = 0;
+    g_atkWakeRequest = 0;
+}
+
+void InvalidateAtkActivity(bool removed) {
+    if (removed) g_atkReceiverRemoved = true;
+    ++g_atkEpoch;
+    CancelAtkActivity();
+    g_atkAwaitingPoll = true;
+    g_atkCooldownUntil = 0;
+}
+
+void MaybeListenForAtkActivity() {
+    if (!g_atkWakeEvt || g_demo || g_atkSuspended || g_atkAwaitingPoll || g_atkActivityTick || g_atkWatch.Armed() ||
+        g_atkListenedThisPoll || GetTickCount64() < g_atkCooldownUntil) return;
+    auto it = g_entries.find(g_atkEntryKey);
+    if (it == g_entries.end() || !it->second.present || !it->second.st.connected || it->second.st.asleep) return;
+
+    const auto& e = it->second;
+    if (e.st.wirelessLink == WirelessLink::Linked && e.st.percent >= 0 && !e.st.cached &&
+        UnixTimeMs() < e.lastReadingMs + POLL_INTERVAL_MS) return;
+
+    g_atkListenedThisPoll = true;
+    if (g_atkWatch.Start(g_hwnd) && !SetTimer(g_hwnd, TIMER_ATK_LISTEN, ATK_LISTEN_MS, nullptr))
+        StopAtkListener();
+}
+
+void OnAtkActivity(HRAWINPUT input) {
+    if (!g_atkWatch.IsActivity(input)) return;
+    g_atkActivityTick = GetTickCount64();
+    StopAtkListener();
+    if (!SetTimer(g_hwnd, TIMER_ATK_WAKE, ATK_WAKE_DELAY_MS, nullptr))
+        g_atkActivityTick = 0;
+}
+
+void OnAtkResult(const AtkResult& result) {
+    if (result.epoch != g_atkEpoch.load() || result.activityTick != g_atkActivityTick) return;
+    g_atkActivityTick = 0;
+    if (!result.reading) {
+        g_atkCooldownUntil = GetTickCount64() + ATK_RETRY_COOLDOWN_MS;
+        g_atkListenedThisPoll = false;
+        return;
+    }
+    auto it = g_entries.find(g_atkEntryKey);
+    if (it == g_entries.end() || !it->second.present || !it->second.st.connected) return;
+    ObserveEntry(it->second, *result.reading, it->first, GetTickCount64(), UnixTimeMs());
     UpdatePlaceholder();
     UpdateWidget();
 }
@@ -533,10 +833,11 @@ void Reconcile() {
     }
 }
 
-void SetMode(bool useWidget) {
+bool SetMode(bool useWidget) {
+    if (!SaveBoolSetting(L"TaskbarWidget", useWidget)) return false;
     g_wantWidget = useWidget;
-    SaveWidgetMode(useWidget);
     Reconcile();
+    return true;
 }
 
 void SetWidgetBackground(bool on) {
@@ -545,9 +846,9 @@ void SetWidgetBackground(bool on) {
     widget::SetBackground(on);
 }
 
-void SetHideLastKnown(bool on) {
-    g_hideLastKnown = on;
-    SaveHideLastKnown(on);
+void SetHideExpiredOrAsleep(bool on) {
+    g_hideExpiredOrAsleep = on;
+    SaveHideExpiredOrAsleep(on);
     for (auto& [k, e] : g_entries) ApplyEntry(e);
     UpdatePlaceholder();
     UpdateWidget();
@@ -591,35 +892,291 @@ void SetBrandColors(bool on) {
     UpdateWidget();
 }
 
-void ToggleHidden(const std::wstring& key) {
-    if (!g_hidden.erase(key)) g_hidden.insert(key);
-    SaveHidden();
+bool SetHidden(const std::wstring& key, bool hidden, bool panelOnly) {
+    auto& target = panelOnly ? g_panelHidden : g_hidden;
+    auto updated = target;
+    if (hidden) updated.insert(PreferenceKey(key));
+    else updated.erase(PreferenceKey(key));
+    if (!WriteMultiSetting(panelOnly ? L"PanelHiddenDevices" : L"HiddenDevices", updated)) return false;
+    target.swap(updated);
+    if (panelOnly) return true;
     auto it = g_entries.find(key);
     if (it != g_entries.end()) ApplyEntry(it->second);
     UpdatePlaceholder();
     UpdateWidget();
+    return true;
 }
 
-// Swaps a shown device with its neighbour (dir -1 = left, +1 = right) and remembers the new order.
-void MoveEntry(const std::wstring& key, int dir) {
-    std::vector<TrayEntry*> list = OrderedEntries(true);
-    auto pos = std::find_if(list.begin(), list.end(), [&](const TrayEntry* e) { return e->st.key == key; });
-    if (pos == list.end()) return;
-    ptrdiff_t i = pos - list.begin(), j = i + dir;
-    if (j < 0 || j >= (ptrdiff_t)list.size()) return;
-    std::swap(list[i], list[j]);
+// Moves within the initiating surface, leaving filtered devices in their original slots.
+bool MoveEntry(const std::wstring& key, int dir, bool panelOrder = false, bool includeHidden = false,
+               const std::wstring& target = {}) {
+    auto all = OrderedEntries(false, true);
+    std::vector<TrayEntry**> slots;
+    for (auto*& entry : all) {
+        if (panelOrder ? (includeHidden || !g_panelHidden.count(PreferenceKey(entry->st.key))) : IsShown(*entry))
+            slots.push_back(&entry);
+    }
+    const auto indexOf = [&](const std::wstring& deviceKey) {
+        const auto found = std::find_if(slots.begin(), slots.end(), [&](TrayEntry** slot) {
+            return (*slot)->st.key == deviceKey;
+        });
+        return found - slots.begin();
+    };
+    auto from = indexOf(key);
+    const auto count = static_cast<ptrdiff_t>(slots.size());
+    if (from == count) return false;
+    const auto to = target.empty() ? from + dir : indexOf(target);
+    if (to < 0 || to >= count) return false;
+    if (from == to) return true;
+    const int step = from < to ? 1 : -1;
+    auto* moving = *slots[from];
+    for (; from != to; from += step) *slots[from] = *slots[from + step];
+    *slots[to] = moving;
     std::vector<std::wstring> order;
-    for (auto* e : list) order.push_back(e->st.key);
-    for (auto& k : g_order)  // keep the places of devices that are not shown right now
+    for (auto* e : all) order.push_back(PreferenceKey(e->st.key));
+    const size_t limit = std::max<size_t>(64, order.size());
+    for (const auto& k : g_order) {
+        if (order.size() >= limit) break;
         if (std::find(order.begin(), order.end(), k) == order.end()) order.push_back(k);
-    g_order = order;
-    SaveOrder();
+    }
+    if (!WriteMultiSetting(L"DeviceOrder", order)) return false;
+    g_order.swap(order);
     UpdateWidget();
+    return true;
+}
+
+bool SetAlias(const std::wstring& key, const std::wstring& name) {
+    auto updated = g_aliases;
+    if (name.empty()) updated.erase(PreferenceKey(key));
+    else updated[PreferenceKey(key)] = name;
+    std::vector<std::wstring> values;
+    for (const auto& [deviceKey, alias] : updated) {
+        values.push_back(deviceKey);
+        values.push_back(alias);
+    }
+    if (!WriteMultiSetting(L"DeviceAliases", values)) return false;
+    g_aliases.swap(updated);
+    ApplyEntry(g_entries.at(key));
+    UpdateWidget();
+    return true;
+}
+
+bool SetLowBattery(int threshold) {
+    if (threshold == g_lowBattery) return true;
+    const DWORD value = static_cast<DWORD>(threshold);
+    if (RegSetKeyValueW(HKEY_CURRENT_USER, kSettingsKey, L"LowBatteryPercent", REG_DWORD,
+                        &value, sizeof(value)) != ERROR_SUCCESS) return false;
+    g_lowBattery = threshold;
+    for (auto& [key, entry] : g_entries) {
+        if (entry.st.percent > threshold) entry.lowWarned = false;
+    }
+    RedrawAll();
+    UpdateWidget();
+    return true;
+}
+
+bool SetLowBatteryNotifications(bool enabled) {
+    if (!SaveBoolSetting(L"LowBatteryNotifications", enabled)) return false;
+    g_lowBatteryNotifications = enabled;
+    return true;
+}
+
+// ---- device panel -----------------------------------------------------------------------------
+
+std::wstring Utf16(std::string_view value) {
+    const int inputSize = static_cast<int>(value.size());
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), inputSize, nullptr, 0);
+    if (!size) return {};
+    std::wstring decoded(size, L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), inputSize, decoded.data(), size);
+    return decoded;
+}
+
+std::string JsonString(const std::wstring& value) {
+    const int inputSize = static_cast<int>(value.size());
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), inputSize, nullptr, 0, nullptr, nullptr);
+    std::string utf8(size, '\0');
+    if (size) WideCharToMultiByte(CP_UTF8, 0, value.data(), inputSize, utf8.data(), size, nullptr, nullptr);
+    std::string result = "\"";
+    constexpr char digits[] = "0123456789abcdef";
+    for (unsigned char ch : utf8) {
+        if (ch < 32) {
+            result += "\\u00";
+            result += digits[ch >> 4];
+            result += digits[ch & 0xF];
+        } else {
+            if (ch == '"' || ch == '\\') result += '\\';
+            result += static_cast<char>(ch);
+        }
+    }
+    return result + "\"";
+}
+
+std::wstring DecodePanelKey(std::string_view hex) {
+    if (hex.size() % 2 != 0) return {};
+    std::string bytes;
+    bytes.reserve(hex.size() / 2);
+    constexpr std::string_view digits = "0123456789abcdef";
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        const auto high = digits.find(hex[i]), low = digits.find(hex[i + 1]);
+        if (high == digits.npos || low == digits.npos) return {};
+        bytes += static_cast<char>(high * 16 + low);
+    }
+    return Utf16(bytes);
+}
+
+const char* JsonBool(bool value) { return value ? "true" : "false"; }
+
+std::string PanelSnapshot(bool ok) {
+    const auto now = UnixTimeMs();
+    std::string json = "{\"ok\":";
+    json += JsonBool(ok);
+    json += ",\"poll\":" + std::to_string(g_pollRevision);
+    json += ",\"refreshRequested\":" + std::to_string(g_requestedRefresh.load());
+    json += ",\"refreshCompleted\":" + std::to_string(g_completedRefresh);
+    json += ",\"threshold\":" + std::to_string(g_lowBattery);
+    json += ",\"lowBatteryNotifications\":" + std::string(JsonBool(g_lowBatteryNotifications));
+    json += ",\"demo\":" + std::string(JsonBool(g_demo));
+    json += ",\"widget\":" + std::string(JsonBool(g_wantWidget));
+    json += ",\"widgetAvailable\":" + std::string(JsonBool(g_useWidget));
+    json += ",\"profileError\":" + std::string(JsonBool(g_profileLoadIssues || std::any_of(
+        g_entries.begin(), g_entries.end(), [](const auto& pair) { return pair.second.profileWriteFailed; })));
+    json += ",\"devices\":[";
+    bool first = true;
+    for (const auto* e : OrderedEntries(false, true)) {
+        const auto& s = e->st;
+        if (!first) json += ',';
+        first = false;
+        const auto& p = e->profile;
+        const bool offline = e->presence == Presence::Offline;
+        const bool online = e->presence == Presence::Online;
+        const bool expired = p.readingTime && now > p.readingTime && now - p.readingTime > READING_FRESH_MS;
+        json += "{\"key\":" + JsonString(s.key);
+        json += ",\"name\":" + JsonString(s.name);
+        json += ",\"displayName\":" + JsonString(DisplayName(s));
+        const auto alias = g_aliases.find(PreferenceKey(s.key));
+        json += ",\"alias\":" + JsonString(alias == g_aliases.end() ? L"" : alias->second);
+        json += ",\"kind\":" + std::to_string(static_cast<int>(s.kind));
+        json += ",\"via\":" + JsonString(s.via);
+        json += ",\"percent\":" + std::to_string(p.percent);
+        json += ",\"level\":" + JsonString(p.level);
+        json += ",\"brand\":" + JsonString(p.brand);
+        json += ",\"batteryCapability\":" + std::to_string(static_cast<int>(p.battery));
+        json += ",\"offline\":" + std::string(JsonBool(offline));
+        json += ",\"presence\":\"" + std::string(online ? "online" : offline ? "offline" : "unknown") + '"';
+        json += ",\"removable\":" + std::string(JsonBool(g_pollRevision && offline && !s.identity.empty() && !e->profileWriteFailed));
+        if (s.wirelessLink != WirelessLink::Unreported) {
+            const char* link = "unknown";
+            if (!offline && s.wirelessLink == WirelessLink::Linked) link = "linked";
+            if (!offline && s.wirelessLink == WirelessLink::Unlinked) link = "unlinked";
+            json += ",\"receiverPresent\":" + std::string(JsonBool(e->present && !offline && s.via == L"2.4 GHz receiver"));
+            json += ",\"wirelessLink\":\"" + std::string(link) + '"';
+        }
+        json += ",\"asleep\":" + std::string(JsonBool(e->present && !offline && s.asleep));
+        json += ",\"cached\":" + std::string(JsonBool(p.percent >= 0 && (!online || !e->profileLive)));
+        json += ",\"expired\":" + std::string(JsonBool(expired));
+        json += ",\"charging\":" + std::string(JsonBool(online && e->profileLive && !expired && IsCharging(*e)));
+        json += ",\"updated\":" + std::to_string(p.readingTime);
+        json += ",\"readingSource\":" + JsonString(p.readingSource);
+        json += ",\"firstOnline\":" + std::to_string(p.firstOnline);
+        json += ",\"lastOnline\":" + std::to_string(p.lastOnline);
+        json += ",\"hidden\":" + std::string(JsonBool(g_panelHidden.count(PreferenceKey(s.key)) != 0));
+        json += ",\"surfaceSupported\":" + std::string(JsonBool(!s.panelOnly));
+        json += ",\"surface\":" + std::string(JsonBool(!IsHidden(s.key)));
+        json += ",\"vid\":" + std::to_string(s.vid);
+        json += ",\"pid\":" + std::to_string(s.pid);
+        json += ",\"protocol\":" + JsonString(p.protocol);
+        json += '}';
+    }
+    return json + "]}";
+}
+
+bool ApplyPanelCommand(std::string_view request) {
+    if (request == "snapshot") return true;
+    if (request == "refresh") {
+        ++g_requestedRefresh;
+        return SetEvent(g_refreshEvt) != FALSE;
+    }
+    const auto first = request.find('\t');
+    if (first == request.npos) return false;
+    const auto second = request.find('\t', first + 1);
+    if (second == request.npos) return false;
+    const auto verb = request.substr(0, first);
+    const auto hexKey = request.substr(first + 1, second - first - 1);
+    const auto value = request.substr(second + 1);
+    if (hexKey.empty() && verb == "threshold") {
+        if (value.empty() || value.size() > 3 || value.find_first_not_of("0123456789") != value.npos) return false;
+        int threshold = 0;
+        for (char digit : value) threshold = threshold * 10 + digit - '0';
+        return threshold >= 1 && threshold <= 100 && SetLowBattery(threshold);
+    }
+    if (hexKey.empty() && verb == "widget") return (value == "0" || value == "1") && SetMode(value == "1");
+    if (hexKey.empty() && verb == "lowBatteryNotifications")
+        return (value == "0" || value == "1") && SetLowBatteryNotifications(value == "1");
+    const auto key = DecodePanelKey(hexKey);
+    if (key.empty() || !g_entries.count(key)) return false;
+    if (verb == "forget") {
+        auto it = g_entries.find(key);
+        auto& e = it->second;
+        if (!value.empty() || !g_pollRevision || e.presence != Presence::Offline || e.st.identity.empty() || e.profileWriteFailed)
+            return false;
+        const bool removed = ForgetDeviceProfile(kSettingsKey, key, PreferenceKey(key), g_pendingRemoval);
+        LoadDevicePreferences();
+        if (!removed) return false;
+        if (e.added) TrayDelete(e.uid);
+        if (e.icon) DestroyIcon(e.icon);
+        g_entries.erase(it);
+        UpdatePlaceholder();
+        UpdateWidget();
+        return true;
+    }
+    if (verb == "hidden" || verb == "surface") {
+        if (value != "0" && value != "1") return false;
+        if (verb == "surface" && g_entries.at(key).st.panelOnly) return false;
+        return SetHidden(key, verb == "hidden" ? value == "1" : value == "0", verb == "hidden");
+    }
+    if (verb == "move") {
+        if (value == "up" || value == "down") return MoveEntry(key, value == "up" ? -1 : 1, true);
+        if (value == "upAll" || value == "downAll") return MoveEntry(key, value == "upAll" ? -1 : 1, true, true);
+    }
+    if (verb == "moveTo" || verb == "moveToAll") {
+        const auto target = DecodePanelKey(value);
+        return !target.empty() && MoveEntry(key, 0, true, verb == "moveToAll", target);
+    }
+    if (verb == "name") {
+        auto name = Utf16(value);
+        if ((!value.empty() && name.empty()) || name.size() > 80 ||
+            std::any_of(name.begin(), name.end(), [](wchar_t c) { return iswcntrl(c) != 0; })) return false;
+        const auto start = name.find_first_not_of(L" ");
+        if (start == name.npos) return SetAlias(key, L"");
+        return SetAlias(key, name.substr(start, name.find_last_not_of(L" ") - start + 1));
+    }
+    return false;
+}
+
+std::string HandlePanelRequest(std::string_view request) { return PanelSnapshot(ApplyPanelCommand(request)); }
+
+void OpenPanel() {
+    if (panel::ActivatePanelWindow()) return;
+    const auto exe = ExePath();
+    const auto dir = exe.substr(0, exe.find_last_of(L"\\/") + 1);
+    const auto path = dir + product::PanelExe;
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION process{};
+    if (CreateProcessW(path.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &startup, &process)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        return;
+    }
+    MessageBoxW(g_hwnd, T(L"Install WirelessBatteryCenterPanel.exe and its Qt runtime next to WirelessBatteryCenter.exe."),
+                T(L"Open device manager"), MB_OK | MB_ICONINFORMATION);
 }
 
 void ShowMenu() {
     ApplyMenuTheme(g_lightTaskbar);
     HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING, ID_PANEL, T(L"Open device manager"));
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     std::vector<std::wstring> keys;  // device index -> device key; menu id ID_DEVICE_FIRST + index * DEV_STRIDE + command
     std::vector<TrayEntry*> all = OrderedEntries(false), shown = OrderedEntries(true);
     if (all.empty()) AppendMenuW(m, MF_STRING | MF_GRAYED, 0, T(L"No devices with battery info found"));
@@ -636,11 +1193,14 @@ void ShowMenu() {
         AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(sub, MF_STRING | (canLeft ? 0 : MF_GRAYED), base + DEV_LEFT, g_wantWidget ? T(L"Move left") : T(L"Move up"));
         AppendMenuW(sub, MF_STRING | (canRight ? 0 : MF_GRAYED), base + DEV_RIGHT, g_wantWidget ? T(L"Move right") : T(L"Move down"));
-        std::wstring line = e->st.name + L":  " + StatusText(*e) + L"   [" + T(e->st.via) + L"]";
+        std::wstring line = DisplayName(e->st) + L":  " + StatusText(*e) + L"   [" + T(e->st.via) + L"]";
+        for (size_t amp = line.find(L'&'); amp != line.npos; amp = line.find(L'&', amp + 2))
+            line.insert(amp, 1, L'&');
         AppendMenuW(m, MF_POPUP | (IsHidden(k) ? 0 : MF_CHECKED), (UINT_PTR)sub, line.c_str());
         keys.push_back(k);
     }
-    AppendMenuW(m, MF_STRING | (g_hideLastKnown ? MF_CHECKED : 0), ID_HIDE_LAST_KNOWN, T(L"Hide last known / asleep devices"));
+    AppendMenuW(m, MF_STRING | (g_hideExpiredOrAsleep ? MF_CHECKED : 0), ID_HIDE_EXPIRED_OR_ASLEEP,
+                T(L"Hide devices that are asleep or have expired readings"));
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING | (g_wantWidget ? MF_CHECKED : 0), ID_MODE_WIDGET, T(L"Show on the taskbar (icon + percentage)"));
     AppendMenuW(m, MF_STRING | (!g_wantWidget ? MF_CHECKED : 0), ID_MODE_TRAY, T(L"Show as tray icons"));
@@ -692,7 +1252,6 @@ void ShowMenu() {
     AppendMenuW(m, MF_STRING, ID_REFRESH, T(L"Refresh now"));
     AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_AUTOSTART, T(L"Start with Windows"));
     AppendMenuW(m, MF_STRING, ID_REPORT, T(L"Request support for a device..."));
-    AppendMenuW(m, MF_STRING, ID_SUPPORT, T(L"Support the project..."));
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, ID_EXIT, T(L"Exit"));
     POINT pt;
@@ -703,9 +1262,10 @@ void ShowMenu() {
     PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
     switch (cmd) {
-        case ID_REFRESH: SetEvent(g_refreshEvt); break;
+        case ID_PANEL: OpenPanel(); break;
+        case ID_REFRESH: ApplyPanelCommand("refresh"); break;
         case ID_AUTOSTART: SetAutostart(!AutostartEnabled()); break;
-        case ID_HIDE_LAST_KNOWN: SetHideLastKnown(!g_hideLastKnown); break;
+        case ID_HIDE_EXPIRED_OR_ASLEEP: SetHideExpiredOrAsleep(!g_hideExpiredOrAsleep); break;
         case ID_WIDGET_BACKGROUND: SetWidgetBackground(!g_widgetBackground); break;
         case ID_MONITOR_ALL: SetWidgetMonitor(L"all"); break;
         case ID_LANG_AUTO: SetLanguage(L""); break;
@@ -715,7 +1275,6 @@ void ShowMenu() {
         case ID_STACKED: SetStacked(!g_stacked); break;
         case ID_MODE_WIDGET: SetMode(true); break;
         case ID_MODE_TRAY: SetMode(false); break;
-        case ID_SUPPORT: ShellExecuteW(nullptr, L"open", L"https://github.com/sponsors/krisgfx9", nullptr, nullptr, SW_SHOWNORMAL); break;
         case ID_REPORT: report::Show(g_inst, g_hwnd); break;
         case ID_EXIT: DestroyWindow(g_hwnd); break;
         default:
@@ -726,7 +1285,7 @@ void ShowMenu() {
             } else if (cmd >= ID_DEVICE_FIRST && cmd < ID_DEVICE_FIRST + keys.size() * DEV_STRIDE) {
                 std::wstring key = keys[(cmd - ID_DEVICE_FIRST) / DEV_STRIDE];
                 switch ((cmd - ID_DEVICE_FIRST) % DEV_STRIDE) {
-                    case DEV_TOGGLE: ToggleHidden(key); break;
+                    case DEV_TOGGLE: SetHidden(key, !IsHidden(key), false); break;
                     case DEV_LEFT:   MoveEntry(key, -1); break;
                     case DEV_RIGHT:  MoveEntry(key, +1); break;
                 }
@@ -739,8 +1298,6 @@ void ShowMenu() {
 // `--demo`: one sample device of every brand instead of real ones, for screenshots and for checking the
 // brand colors without owning the hardware. Keys, vendor ids and names are mixed on purpose, so every way
 // of recognising a brand gets used.
-bool g_demo = false;
-
 std::vector<DeviceStatus> DemoDevices() {
     auto make = [](const wchar_t* key, const wchar_t* name, DeviceKind kind, int pct, unsigned short vid, bool charging) {
         DeviceStatus s;
@@ -753,7 +1310,7 @@ std::vector<DeviceStatus> DemoDevices() {
         s.via = L"demo";
         return s;
     };
-    return {
+    std::vector<DeviceStatus> devices = {
         make(L"razer:demo", L"Razer DeathAdder V3 Pro", DeviceKind::Mouse, 78, 0x1532, false),
         make(L"demo:logi", L"Logitech G PRO X 2 LIGHTSPEED", DeviceKind::Headset, 64, 0x046D, false),
         make(L"steelseries:demo", L"SteelSeries Arctis Nova 7", DeviceKind::Headset, 55, 0, false),
@@ -771,23 +1328,70 @@ std::vector<DeviceStatus> DemoDevices() {
         make(L"steam:demo", L"Steam Controller", DeviceKind::Gamepad, 50, 0x28DE, true),
         make(L"bt:demo-plain", L"Bluetooth Headphones", DeviceKind::Headset, 100, 0, false),
     };
+    devices.back().percent = -1;
+    devices.back().wirelessLink = WirelessLink::Linked;
+    devices[6].connected = false;
+    devices[6].percent = -1;
+    devices[4].asleep = true;
+    auto wired = make(L"demo:kb216", L"Dell KB216", DeviceKind::Keyboard, -1, 0x413C, false);
+    wired.battery = BatteryCapability::None;
+    wired.wirelessLink = WirelessLink::Linked;
+    wired.panelOnly = true;
+    devices.push_back(std::move(wired));
+    auto headset = make(L"demo:hecate", L"HECATE G5 Wireless", DeviceKind::Headset, -1, 0x35BB, false);
+    headset.pid = 0xA008;
+    headset.battery = BatteryCapability::Unsupported;
+    headset.wirelessLink = WirelessLink::Unknown;
+    headset.panelOnly = true;
+    devices.push_back(std::move(headset));
+    for (auto& s : devices) s.identity = s.key;
+    return devices;
 }
 
 DWORD WINAPI Worker(LPVOID) {
     // At sign-in a USB receiver may enumerate before its wireless link is ready.
     constexpr DWORD startupPollDelays[] = { 3000, 7000, 15000 };
     size_t startupPoll = 0;
-    HANDLE events[2] = { g_stopEvt, g_refreshEvt };
+    HANDLE events[] = { g_stopEvt, g_refreshEvt, g_atkWakeEvt };
+    const DWORD eventCount = g_atkWakeEvt ? ARRAYSIZE(events) : 2;
+    ULONGLONG nextPoll = 0;
+    ULONGLONG lastAtkPollReading = 0;
+    std::uint64_t lastManualRefresh = 0;
     for (;;) {
-        auto* v = new std::vector<DeviceStatus>(g_demo ? DemoDevices() : PollAllDevices());
-        if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
-        DWORD delay = POLL_INTERVAL_MS;
-        if (startupPoll < ARRAYSIZE(startupPollDelays)) delay = startupPollDelays[startupPoll++];
-        if (WaitForMultipleObjects(2, events, FALSE, delay) == WAIT_OBJECT_0) return 0;
+        const auto now = GetTickCount64();
+        const DWORD wait = WaitForMultipleObjects(eventCount, events, FALSE,
+            nextPoll > now ? static_cast<DWORD>(nextPoll - now) : 0);
+        if (wait == WAIT_OBJECT_0 || wait == WAIT_FAILED) return 0;
+        const auto epoch = g_atkEpoch.load();
+        if (g_atkReceiverRemoved.exchange(false)) atk8k::ReceiverRemoved();
+
+        if (wait == WAIT_OBJECT_0 + 1 || GetTickCount64() >= nextPoll) {
+            const auto refresh = g_requestedRefresh.load();
+            auto* v = new PollResult{refresh, epoch, {}};
+            v->devices = g_demo ? DemoDevices() : PollAllDevices(refresh != lastManualRefresh, &v->endpoints);
+            lastManualRefresh = refresh;
+            v->atkActivityAvailable = !g_demo && atk8k::CanReadAfterActivity();
+            const auto reading = std::find_if(v->devices.begin(), v->devices.end(), [](const auto& device) {
+                return device.key == atk8k::DeviceKey && device.percent >= 0 && !device.cached;
+            });
+            if (reading != v->devices.end()) {
+                lastAtkPollReading = GetTickCount64();
+                g_atkWakeRequest = 0;
+            }
+            if (!PostMessageW(g_hwnd, WM_RESULTS, 0, (LPARAM)v)) delete v;
+            const DWORD delay = startupPoll < ARRAYSIZE(startupPollDelays)
+                ? startupPollDelays[startupPoll++] : POLL_INTERVAL_MS;
+            nextPoll = GetTickCount64() + delay;
+            // A wake event can coincide with the periodic deadline. Keep it only if this scan missed.
+            if (wait == WAIT_OBJECT_0 + 2 && g_atkWakeRequest.load()) SetEvent(g_atkWakeEvt);
+        } else if (wait == WAIT_OBJECT_0 + 2) {
+            const auto activity = g_atkWakeRequest.exchange(0);
+            if (!activity || activity <= lastAtkPollReading) continue;
+            auto* result = new AtkResult{activity, epoch, atk8k::ReadAfterActivity(activity)};
+            if (!PostMessageW(g_hwnd, WM_ATK_RESULT, 0, (LPARAM)result)) delete result;
+        }
     }
 }
-
-void RefreshSoon(UINT ms) { SetTimer(g_hwnd, TIMER_DEBOUNCE, ms, nullptr); }
 
 LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == g_taskbarCreatedMsg && msg != 0) {  // Explorer restarted
@@ -798,12 +1402,41 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     switch (msg) {
+        case WM_PANEL_PIPE:
+            panel::Complete();
+            return 0;
         case WM_RESULTS: {
-            auto* v = reinterpret_cast<std::vector<DeviceStatus>*>(lp);
-            OnResults(*v);
+            auto* v = reinterpret_cast<PollResult*>(lp);
+            g_completedRefresh = v->refresh;
+            OnResults(v->devices, v->endpoints);
+            if (!g_atkSuspended && v->atkEpoch == g_atkEpoch.load()) {
+                g_atkAwaitingPoll = !v->atkActivityAvailable;
+                const auto it = g_entries.find(g_atkEntryKey);
+                if (!v->atkActivityAvailable || it == g_entries.end() || !it->second.present || !it->second.st.connected ||
+                    (it->second.st.percent >= 0 && !it->second.st.cached)) {
+                    CancelAtkActivity();
+                    g_atkCooldownUntil = 0;
+                }
+                if (g_atkWatch.Armed() && !SetTimer(h, TIMER_ATK_LISTEN, ATK_LISTEN_MS, nullptr))
+                    StopAtkListener();
+                g_atkListenedThisPoll = g_atkWatch.Armed();
+                MaybeListenForAtkActivity();
+            }
             delete v;
             return 0;
         }
+        case WM_ATK_RESULT: {
+            auto* result = reinterpret_cast<AtkResult*>(lp);
+            OnAtkResult(*result);
+            delete result;
+            return 0;
+        }
+        case WM_INPUT:
+            OnAtkActivity(reinterpret_cast<HRAWINPUT>(lp));
+            return DefWindowProcW(h, msg, wp, lp);
+        case WM_INPUT_DEVICE_CHANGE:
+            if (g_atkWatch.Armed() && !g_atkWatch.RefreshDevices()) StopAtkListener();
+            return 0;
         case WM_TRAY:
             switch (LOWORD(lp)) {
                 case WM_CONTEXTMENU:
@@ -818,14 +1451,51 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp) DestroyWindow(h);
             return 0;
         case WM_DEVICECHANGE:
-            if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) RefreshSoon(2500);
+            if (lp && (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE)) {
+                const auto* header = reinterpret_cast<const DEV_BROADCAST_HDR*>(lp);
+                if (header->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE &&
+                    atk8k::IsReceiverPath(reinterpret_cast<const DEV_BROADCAST_DEVICEINTERFACE_W*>(lp)->dbcc_name)) {
+                    InvalidateAtkActivity(wp == DBT_DEVICEREMOVECOMPLETE);
+                }
+            }
+            if (!g_deviceSettling && (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE
+                                      || wp == DBT_DEVNODES_CHANGED)) {
+                // A single device can publish several interfaces. Scan now and once more after they settle.
+                g_deviceSettling = SetTimer(h, TIMER_DEVICE_SETTLE, DEVICE_SETTLE_MS, nullptr) != 0;
+                SetEvent(g_refreshEvt);
+            }
             return TRUE;
         case WM_POWERBROADCAST:
-            if (wp == PBT_APMRESUMEAUTOMATIC) RefreshSoon(5000);
+            if (wp == PBT_APMSUSPEND) {
+                g_atkSuspended = true;
+                InvalidateAtkActivity(false);
+            }
+            if (wp == PBT_APMRESUMEAUTOMATIC) {
+                InvalidateAtkActivity(false);
+                g_atkSuspended = false;
+                SetTimer(h, TIMER_RESUME_REFRESH, 5000, nullptr);
+            }
             return TRUE;
         case WM_TIMER:
-            if (wp == TIMER_DEBOUNCE) { KillTimer(h, TIMER_DEBOUNCE); SetEvent(g_refreshEvt); }
-            if (wp == TIMER_WIDGET) Reconcile();
+            if (wp == TIMER_DEVICE_SETTLE || wp == TIMER_RESUME_REFRESH) {
+                KillTimer(h, wp);
+                if (wp == TIMER_DEVICE_SETTLE) g_deviceSettling = false;
+                SetEvent(g_refreshEvt);
+            }
+            if (wp == TIMER_WIDGET) {
+                Reconcile();
+                RefreshReadingExpiry();
+                MaybeListenForAtkActivity();
+                panel::ExpireClient();
+            }
+            if (wp == TIMER_ATK_LISTEN) StopAtkListener();
+            if (wp == TIMER_ATK_WAKE) {
+                KillTimer(h, TIMER_ATK_WAKE);
+                if (g_atkActivityTick) {
+                    g_atkWakeRequest = g_atkActivityTick;
+                    SetEvent(g_atkWakeEvt);
+                }
+            }
             return 0;
         case WM_SETTINGCHANGE:
             if (lp && !lstrcmpW((LPCWSTR)lp, L"ImmersiveColorSet")) {
@@ -835,10 +1505,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_DESTROY:
             KillTimer(h, TIMER_WIDGET);
+            CancelAtkActivity();
+            panel::Stop();
+            panel::RequestClose(panel::FindPanelWindow());
             widget::Destroy();
             SetEvent(g_stopEvt);
             if (g_worker) WaitForSingleObject(g_worker, 5000);
             for (auto& [k, e] : g_entries) {
+                SaveProfile(e, GetTickCount64(), true);
                 if (e.added) TrayDelete(e.uid);
                 if (e.icon) DestroyIcon(e.icon);
             }
@@ -849,7 +1523,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-// `WirelessBattery.exe --list` prints what it finds, `--dump` every HID collection.
+// `--list` prints what the background finds. `--dump` prints every HID collection.
 int ListToConsole(bool dump) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!out || out == INVALID_HANDLE_VALUE) {
@@ -868,7 +1542,7 @@ int ListToConsole(bool dump) {
         std::wstring text = DumpHidCollections();
         wchar_t path[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, path);
-        wcscat_s(path, L"WirelessBattery-dump.txt");
+        wcscat_s(path, L"WirelessBatteryCenter-dump.txt");
         HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (f != INVALID_HANDLE_VALUE) {
             std::wstring crlf;
@@ -924,17 +1598,26 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
         return 0;
     }
     if (cmdLine && wcsstr(cmdLine, L"--quit")) {  // used by the installer before upgrading/uninstalling
-        if (HWND w = FindWindowW(L"WirelessBatteryWnd", nullptr)) {
-            PostMessageW(w, WM_CLOSE, 0, 0);
-            for (int i = 0; i < 50 && FindWindowW(L"WirelessBatteryWnd", nullptr); i++) Sleep(100);
-        }
+        const HWND background = panel::FindBackgroundWindow();
+        const HWND window = panel::FindPanelWindow();
+        panel::RequestClose(window);
+        panel::RequestClose(background);
+        for (int i = 0; i < 60 && (IsWindow(background) || IsWindow(window)); ++i) Sleep(100);
         return 0;
     }
     g_inst = inst;
     g_demo = cmdLine && wcsstr(cmdLine, L"--demo");
+    if (g_demo) kSettingsKey = product::DemoSettingsKey;
 
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\WirelessBatteryTray");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, panel::BackgroundMutex);
+    if (!mutex) return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(mutex);
+        return 0;
+    }
+    if (!g_demo) g_profileLoadIssues = !ImportLegacySettings(HKEY_CURRENT_USER, product::LegacySettingsKey,
+                                                          product::SettingsKey, false);
+    if (!RecoverDeviceRemoval(kSettingsKey, g_pendingRemoval)) g_profileLoadIssues = true;
 
     g_lightTaskbar = ReadLightTaskbar();
     ApplyMenuTheme(g_lightTaskbar);
@@ -943,21 +1626,26 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     WNDCLASSEXW wc{ sizeof(wc) };
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
-    wc.lpszClassName = L"WirelessBatteryWnd";
+    wc.lpszClassName = panel::BackgroundWindowClass;
     RegisterClassExW(&wc);
     // A hidden top-level window (not message-only) so it receives the TaskbarCreated broadcast.
     g_hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, kAppName, WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, inst, nullptr);
-    if (!g_hwnd) return 1;
+    if (!g_hwnd) {
+        CloseHandle(mutex);
+        return 1;
+    }
 
+    g_refreshEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_stopEvt = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_atkWakeEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     DEV_BROADCAST_DEVICEINTERFACE_W filter{ sizeof(filter) };
     filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
     filter.dbcc_classguid = GUID_DEVINTERFACE_HID;
     HDEVNOTIFY notify = RegisterDeviceNotificationW(g_hwnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
 
-    g_refreshEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    g_stopEvt = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     g_wantWidget = LoadWidgetMode();
-    g_hideLastKnown = LoadHideLastKnown();
+    g_lowBatteryNotifications = LoadBoolSetting(L"LowBatteryNotifications", true);
+    g_hideExpiredOrAsleep = LoadHideExpiredOrAsleep();
     g_widgetBackground = LoadWidgetBackground();
     g_brandColors = LoadBrandColors();
     g_stacked = LoadStacked();
@@ -966,12 +1654,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     i18n::Init();
     g_widgetMonitor = LoadWidgetMonitor();
     widget::SetMonitorChoice(g_widgetMonitor);
-    LoadHidden();
-    LoadOrder();
+    LoadDeviceSettings();
+    LoadProfiles();
     Reconcile();
     UpdatePlaceholder();  // something to click on until the first poll finishes
     SetTimer(g_hwnd, TIMER_WIDGET, 1000, nullptr);
     g_worker = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+    panel::Start(g_hwnd, WM_PANEL_PIPE, HandlePanelRequest);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
@@ -980,9 +1669,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
         DispatchMessageW(&m);
     }
     // drain results posted after shutdown started
-    while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<std::vector<DeviceStatus>*>(m.lParam);
+    while (PeekMessageW(&m, nullptr, WM_RESULTS, WM_RESULTS, PM_REMOVE)) delete reinterpret_cast<PollResult*>(m.lParam);
+    while (PeekMessageW(&m, nullptr, WM_ATK_RESULT, WM_ATK_RESULT, PM_REMOVE)) delete reinterpret_cast<AtkResult*>(m.lParam);
     if (notify) UnregisterDeviceNotification(notify);
     if (g_worker) CloseHandle(g_worker);
-    ReleaseMutex(mutex);
+    if (g_atkWakeEvt) CloseHandle(g_atkWakeEvt);
+    CloseHandle(mutex);
     return 0;
 }

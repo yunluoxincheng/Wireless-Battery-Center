@@ -9,8 +9,11 @@
 #include "platform_compat.h"
 
 #ifdef _WIN32
+// Older MinGW headers leave the HID entry points without C linkage in C++.
+extern "C" {
 #include <hidsdi.h>
 #include <hidpi.h>
+}
 #else
 // Only the fields used by HidColl's accessors are needed by the portable drivers.
 struct HIDP_CAPS {
@@ -33,6 +36,7 @@ struct HidColl {
     USHORT vid = 0, pid = 0;
     int iface = -1;  // USB interface number (MI_xx in the path), -1 when unknown
     HIDP_CAPS caps{};
+    std::wstring container;  // Windows physical container, shared by its HID collections
     USHORT page() const { return caps.UsagePage; }
     USHORT usage() const { return caps.Usage; }
     USHORT inLen() const { return caps.InputReportByteLength; }
@@ -41,6 +45,11 @@ struct HidColl {
 };
 
 std::vector<HidColl> EnumHid();
+inline std::wstring HidIdentity(const HidColl& c) {
+    // Include the product endpoint so a container alone cannot join a receiver to a cable.
+    if (c.container.empty()) return {};
+    return L"hid-device:" + c.container + L":" + std::to_wstring(c.vid) + L":" + std::to_wstring(c.pid);
+}
 
 class HidDev {
 public:
@@ -64,6 +73,14 @@ public:
     bool Write(std::initializer_list<BYTE> data, int timeoutMs = 500) { return Write(std::vector<BYTE>(data), timeoutMs); }
     // Reads one input report into `buf` (resized to fit). Returns the byte count, or -1 on timeout/error.
     int Read(std::vector<BYTE>& buf, int timeoutMs);
+#ifdef _WIN32
+    struct ReadDiagnostics {
+        DWORD error = ERROR_SUCCESS;
+        bool timedOut = false;
+        bool strippedReportId = false;
+    };
+    int Read(std::vector<BYTE>& buf, int timeoutMs, ReadDiagnostics* diagnostics);
+#endif
     // For collections without an interrupt OUT pipe (WriteFile fails there): arms a read, sends
     // `data` with HidD_SetOutputReport, and returns the first input report like Read() does.
     int SetOutputAndRead(const std::vector<BYTE>& data, std::vector<BYTE>& buf, int timeoutMs);

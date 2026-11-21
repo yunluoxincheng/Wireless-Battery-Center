@@ -1,4 +1,26 @@
-Wireless Battery bundles the following third-party software.
+Wireless Battery Center bundles the following third-party software.
+
+Wireless Battery upstream
+  Original project by krisgfx9 and contributors, licensed under GPL-3.0.
+  https://github.com/krisgfx9/Wireless-Device-Battery-Monitor
+  App icon by nik-txt (https://github.com/nik-txt).
+
+Qt 6.8.3 (dynamically loaded libraries, plugins and QML modules)
+  Copyright (C) The Qt Company Ltd. and contributors.
+  Distributed under LGPLv3/GPLv3 and applicable third-party licenses.
+  License texts and the SDK's SPDX inventories are in licenses/Qt.
+  Corresponding Qt sources: https://download.qt.io/archive/qt/6.8/6.8.3/submodules/
+  Runtime modules: Qt Base, Qt Declarative, Qt SVG and Qt Translations.
+  Third-party notices: https://doc.qt.io/qt-6.8/licenses-used-in-qt.html
+  The Qt libraries are separate files. Users may replace them with compatible builds.
+
+MinGW-w64 / GCC 13.1.0 runtime (Qt MinGW 64-bit kit)
+  GCC Runtime Library Exception and MinGW-w64 / winpthreads license texts are in licenses.
+  Sources: https://gcc.gnu.org/releases.html and https://www.mingw-w64.org/downloads/
+
+Lucide icons
+  Attribution and the ISC license are in LUCIDE-LICENSE.txt.
+  https://lucide.dev/
 
 HeadsetControl 4.3.0 (headsetcontrol.exe)
   Copyright (C) the HeadsetControl contributors
@@ -6,7 +28,7 @@ HeadsetControl 4.3.0 (headsetcontrol.exe)
   License: GNU General Public License v3.0 (same text as LICENSE.txt)
   Corresponding source code:
     https://github.com/Sapd/HeadsetControl/releases/tag/4.3.0
-    (headsetcontrol-4.3.0.tar.gz is also attached to every Wireless Battery release)
+    (headsetcontrol-4.3.0.tar.gz is also attached to every Windows release)
 
   The binary is the unmodified official release asset
   headsetcontrol-windows-x86_64.exe,

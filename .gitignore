@@ -1,5 +1,11 @@
 build/
 wireless-battery
+/wireless-battery.zip
+/design-reference/
+/.env
+/.env.*
+!/.env.example
+/CMakeUserPresets.json
 *.exe
 *.o
 dist/

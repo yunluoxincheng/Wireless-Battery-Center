@@ -448,6 +448,15 @@ void PollAirPods(PollContext& ctx) {
                     (a.rightChg ? L"\x26A1" : L"") + L"  case " + Pct(a.box) + (a.boxChg ? L"\x26A1" : L"");
         }
         s.graceSec = d.connected ? 300 : 0;
+        const auto ageMs = GetTickCount64() - a.tick;
+        FILETIME now{};
+        GetSystemTimeAsFileTime(&now);
+        ULARGE_INTEGER clock{};
+        clock.LowPart = now.dwLowDateTime;
+        clock.HighPart = now.dwHighDateTime;
+        constexpr ULONGLONG unixEpoch = 116444736000000000ull;
+        s.readingTimeMs = (clock.QuadPart - unixEpoch) / 10000 - ageMs;
+        s.cached = ageMs >= 90000;
         ctx.out.push_back(s);
     }
 }

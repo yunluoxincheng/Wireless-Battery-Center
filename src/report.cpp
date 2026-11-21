@@ -242,7 +242,7 @@ std::wstring WindowsBuild() {
 
 // The short technical summary that goes into the request's notes (the API allows 500 characters).
 std::wstring TechSummary(const Candidate* c) {
-    std::wstring s = L"[Sent from the Wireless Battery app, Windows build " + WindowsBuild() + L"] ";
+    std::wstring s = L"[Sent from the Wireless Battery Center app, Windows build " + WindowsBuild() + L"] ";
     if (!c) return s + L"Device not in the app's list.";
     wchar_t ids[16];
     swprintf(ids, 16, L"%04X:%04X", c->vid, c->pid);
@@ -318,7 +318,7 @@ std::string RequestJson(const Request& r) {
 // POSTs the JSON body. Returns the HTTP status (0 = could not reach the server) and the reply body.
 int Post(const std::string& body, std::string& reply) {
     int status = 0;
-    HINTERNET s = WinHttpOpen(L"WirelessBattery", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    HINTERNET s = WinHttpOpen(L"WirelessBatteryCenter", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!s) return 0;
     WinHttpSetTimeouts(s, 10000, 10000, 15000, 15000);
     HINTERNET c = WinHttpConnect(s, kApiHost, INTERNET_DEFAULT_HTTPS_PORT, 0);
@@ -392,7 +392,7 @@ std::wstring ResultMessage(const SendResult& r) {
 enum : int { IDC_DEVICE = 101, IDC_MODEL, IDC_TYPE, IDC_NAME, IDC_NOTES, IDC_PREVIEW, IDC_COPY, IDC_SEND, IDC_STATUS };
 constexpr UINT WM_CANDIDATES = WM_APP + 20, WM_SENT = WM_APP + 21, WM_FULLREPORT = WM_APP + 22;
 const wchar_t* const kTypes[] = { L"mouse", L"keyboard", L"headset", L"controller", L"other" };
-const wchar_t kClass[] = L"WirelessBatteryReport";
+const wchar_t kClass[] = L"WirelessBatteryCenterReport";
 
 HWND g_wnd;
 HFONT g_font;
@@ -645,7 +645,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
                 EnableWindow(GetDlgItem(h, IDC_COPY), FALSE);
                 SetStatus(T(L"Collecting the full report (this takes about 10 seconds)..."));
                 const Candidate* c = Selected();
-                std::wstring header = L"Wireless Battery device report\nWindows build " + WindowsBuild() + L"\n";
+                std::wstring header = L"Wireless Battery Center device report\nWindows build " + WindowsBuild() + L"\n";
                 if (c) {
                     wchar_t ids[16];
                     swprintf(ids, 16, L"%04X:%04X", c->vid, c->pid);
@@ -710,7 +710,7 @@ void Show(HINSTANCE inst, HWND owner) {
     GetMonitorInfoW(mon, &mi);
     int w = rc.right - rc.left, hgt = rc.bottom - rc.top;
     int x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left - w) / 2, y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top - hgt) / 2;
-    HWND h = CreateWindowExW(i18n::Rtl() ? WS_EX_LAYOUTRTL : 0, kClass, (std::wstring(L"Wireless Battery: ") + T(L"request support for a device")).c_str(), style, x, y, w, hgt, nullptr, nullptr, inst,
+    HWND h = CreateWindowExW(i18n::Rtl() ? WS_EX_LAYOUTRTL : 0, kClass, (std::wstring(L"Wireless Battery Center: ") + T(L"request support for a device")).c_str(), style, x, y, w, hgt, nullptr, nullptr, inst,
                              nullptr);
     g_quitOnClose = owner == nullptr;
     if (!h) return;

@@ -1,0 +1,25 @@
+#include <winver.h>
+#include "version.h"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION WBC_VERSION
+PRODUCTVERSION WBC_VERSION
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", WBC_DESCRIPTION
+      VALUE "ProductName", "Wireless Battery Center"
+      VALUE "FileVersion", WBC_VERSION_STRING
+      VALUE "ProductVersion", WBC_VERSION_STRING
+      VALUE "OriginalFilename", WBC_FILENAME
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

@@ -1,0 +1,2 @@
+#define WBC_VERSION 0,1,0,0
+#define WBC_VERSION_STRING "0.1.0"

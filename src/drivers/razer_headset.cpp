@@ -454,6 +454,7 @@ void PollBlackSharkV3X(PollContext& ctx) {
         Cached& cache = g_cache[pid];
         if (cache.valid && GetTickCount64() - cache.at < kMinIntervalMs) {
             ctx.Add(cache.status, 0x1532, pid);
+            ctx.out.back().cached = true;
             continue;
         }
         HidDev d;
@@ -488,6 +489,7 @@ void PollRazerHeadsets(PollContext& ctx) {
         Cached& cache = g_cache[pid];
         if (cache.valid && GetTickCount64() - cache.at < kMinIntervalMs) {
             ctx.Add(cache.status, 0x1532, pid);
+            ctx.out.back().cached = true;
             continue;
         }
         HidDev d;
