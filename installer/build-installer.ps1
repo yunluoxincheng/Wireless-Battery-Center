@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory)][string]$QtDir,
     [Parameter(Mandatory)][string]$MingwDir,
     [Parameter(Mandatory)][string]$InnoCompiler,
+    [string]$Msys2Root,
     [string]$Version,
     [string]$OutputDir,
     [ValidateRange(1, 32)][int]$Jobs = 4,
@@ -40,9 +41,15 @@ $gcc = Join-Path $MingwDir 'bin/g++.exe'
 $windres = Join-Path $MingwDir 'bin/windres.exe'
 $qtPaths = Join-Path $QtDir 'bin/qtpaths.exe'
 $deployQt = Join-Path $QtDir 'bin/windeployqt.exe'
-$gitRoot = Split-Path -Parent (Split-Path -Parent (Get-Command git.exe).Source)
-$bash = Join-Path $gitRoot 'bin/bash.exe'
-if (-not (Test-Path -LiteralPath $bash)) { $bash = (Get-Command bash.exe).Source }
+if ($Msys2Root) {
+    $bash = Join-Path (Resolve-Path -LiteralPath $Msys2Root).Path 'usr/bin/bash.exe'
+    $make = 'PATH="$PATH:/usr/bin" /usr/bin/make SHELL=/usr/bin/sh'
+} else {
+    $gitRoot = Split-Path -Parent (Split-Path -Parent (Get-Command git.exe).Source)
+    $bash = Join-Path $gitRoot 'bin/bash.exe'
+    if (-not (Test-Path -LiteralPath $bash)) { $bash = (Get-Command bash.exe).Source }
+    $make = 'mingw32-make SHELL=sh'
+}
 $oldPath = $env:PATH
 Push-Location $root
 try {
@@ -61,14 +68,14 @@ try {
     $panelExe = 'WirelessBatteryCenterPanel.exe'
     $backgroundExe = 'WirelessBatteryCenter.exe'
 
-    Invoke-Checked $bash @('-c', "mingw32-make SHELL=sh -j$Jobs")
+    Invoke-Checked $bash @('-c', "$make CXX=g++ WINDRES=windres -j$Jobs")
     Invoke-Checked 'cmake' @('-S', $root, '-B', $panelBuild, '-G', 'Ninja',
         "-DCMAKE_PREFIX_PATH=$($QtDir.Replace('\', '/'))",
         "-DCMAKE_CXX_COMPILER=$($gcc.Replace('\', '/'))", "-DCMAKE_RC_COMPILER=$($windres.Replace('\', '/'))",
         '-DCMAKE_BUILD_TYPE=Release')
     Invoke-Checked 'cmake' @('--build', $panelBuild, '--parallel', "$Jobs", '--target', 'WirelessBatteryCenterPanel')
     if ($RunTests) {
-        Invoke-Checked $bash @('-c', 'mingw32-make SHELL=sh test')
+        Invoke-Checked $bash @('-c', "$make CXX=g++ WINDRES=windres test")
         Invoke-Checked 'cmake' @('--build', $panelBuild, '--parallel', "$Jobs", '--target',
             'WirelessBatteryCenterPanel_qmllint', 'DriverLauncherTest')
         Invoke-Checked (Join-Path $panelBuild 'DriverLauncherTest.exe') @()

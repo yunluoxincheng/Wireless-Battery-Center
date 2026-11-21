@@ -20,6 +20,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prepare GNU Make for the Windows build
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: MSYS
+          install: make
+
       - name: Install Qt 6.8.3 and its MinGW 13.1.0 toolchain
         shell: pwsh
         run: |
@@ -47,6 +54,8 @@ jobs:
 
       - name: Build, run tests and package Windows x64
         shell: pwsh
+        env:
+          WBC_MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           $version = if ($env:GITHUB_REF_TYPE -eq 'tag') {
             if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Expected a vX.Y.Z release tag.' }
@@ -56,6 +65,7 @@ jobs:
             QtDir = "$env:WBC_QT_KIT\6.8.3\mingw_64"
             MingwDir = "$env:WBC_QT_KIT\Tools\mingw1310_64"
             InnoCompiler = $env:WBC_ISCC
+            Msys2Root = $env:WBC_MSYS2_ROOT
             OutputDir = "$env:RUNNER_TEMP\wbc-release"
             Version = $version
             RunTests = $true

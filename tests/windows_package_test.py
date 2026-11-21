@@ -157,7 +157,9 @@ def uninstall(folder, log):
                    check=True, timeout=180)
     # Inno's copied uninstaller continues after the launcher exits.
     wait_for(lambda: not exe.exists() and not (folder / BACKGROUND).exists() and
-             registry(UNINSTALL_KEY, "DisplayName") is None, "clean uninstall")
+             registry(UNINSTALL_KEY, "DisplayName") is None and log.is_file() and
+             b"Uninstallation process succeeded." in log.read_bytes() and
+             b"Log closed." in log.read_bytes(), "clean uninstall")
 
 
 def digest(path):

@@ -2,7 +2,7 @@
 
 ## 本地构建安装包和便携版
 
-在项目根目录使用 PowerShell 7。需要 Git for Windows、CMake、Ninja、Qt 6.8.3 MinGW x64 SDK、对应的 MinGW-w64 13.1.0 工具链和 Inno Setup。GitHub Actions 使用 Inno Setup 6.7.4。脚本从 `res/version.h` 读取版本，并核对两个 EXE 的版本资源。
+在项目根目录使用 PowerShell 7。需要 Git for Windows、CMake、Ninja、Qt 6.8.3 MinGW x64 SDK、对应的 MinGW-w64 13.1.0 工具链和 Inno Setup。GitHub Actions 使用 MSYS2 的 GNU Make 和 Inno Setup 6.7.4，两个 EXE 仍使用同一套 Qt MinGW 编译器。脚本从 `res/version.h` 读取版本，并核对两个 EXE 的版本资源。
 
 ```powershell
 $params = @{
