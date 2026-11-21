@@ -2,12 +2,12 @@
 # Scans a pull request's diff for things this app should never do, so a reviewer knows exactly which
 # lines to read carefully before merging. It reads the diff as text and never runs code from the PR.
 #
-#   usage: scripts/pr-safety.sh <diff-file>          (exit 1 when anything is flagged)
+#   usage: scripts/pr-safety.sh <diff-file>          (exit 42 when findings are reported)
 #
 # This is a tripwire, not a guarantee: a clean result still needs a human review of the diff.
-set -u
+set -euo pipefail
 diff_file="$1"
-summary="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+summary="${GITHUB_STEP_SUMMARY:-}"
 
 # The app only talks to HID devices and the Windows device APIs. Anything below is out of place in
 # its source and must be justified in the PR.
@@ -55,7 +55,7 @@ function flag(cat, text) {
 }
 ' "$diff_file")
 
-{
+report() {
     echo "## PR safety check"
     echo
     if [ -z "$findings" ]; then
@@ -69,9 +69,10 @@ function flag(cat, text) {
         printf '%s\n' "$findings" | while IFS=$'\t' read -r f l c t; do
             t="${t//|/\\|}"
             printf '| `%s` | %s | %s | `%s` |\n' "$f" "$l" "$c" "$t"
-            [ -n "${GITHUB_ACTIONS:-}" ] && echo "::warning file=$f,line=$l::$c" >&2
+            if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::warning file=$f,line=$l::$c" >&2; fi
         done
     fi
-} >> "$summary"
+}
 
-[ -z "$findings" ]
+if [ -n "$summary" ]; then report >> "$summary"; else report; fi
+if [ -n "$findings" ]; then exit 42; fi

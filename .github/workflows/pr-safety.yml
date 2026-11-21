@@ -15,6 +15,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  statuses: read
 
 jobs:
   scan:
@@ -24,10 +25,30 @@ jobs:
       - name: Download the pull request's changes as text
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/pr.diff"
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: gh api -H "Accept: application/vnd.github.diff" "repos/$GITHUB_REPOSITORY/compare/$PR_BASE...$PR_HEAD" > "$RUNNER_TEMP/pr.diff"
       - name: Scan for red flags
-        run: bash scripts/pr-safety.sh "$RUNNER_TEMP/pr.diff"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          result=0
+          bash scripts/pr-safety.sh "$RUNNER_TEMP/pr.diff" || result=$?
+          if [ "$result" -eq 0 ]; then exit 0; fi
+          if [ "$result" -ne 42 ]; then exit "$result"; fi
+
+          # A registry write, API call, or build change needs review. Keep the findings
+          # visible and accept an explicit review only from the owner on this exact head.
+          context="wbc/pr-safety-review/$PR_BASE"
+          reviewed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$PR_HEAD/statuses?per_page=100" |
+            jq -r --arg owner "$GITHUB_REPOSITORY_OWNER" --arg context "$context" '[.[] | select(.context == $context and .creator.login == $owner)][0].state // ""')
+          if [ "$reviewed" != "success" ]; then
+            echo "::error::Review the reported findings and record $context on $PR_HEAD as the repository owner."
+            exit 1
+          fi
+          echo "Repository owner reviewed the reported findings for $PR_HEAD against $PR_BASE." >> "$GITHUB_STEP_SUMMARY"
       # AI tools add "Co-authored-by: Claude ..." to commit messages, which lists the AI as a repo
       # contributor once merged. Ask for those lines to be removed before merging.
       - name: Check commit messages for AI co-author credits
